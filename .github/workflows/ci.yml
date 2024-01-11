@@ -1,4 +1,4 @@
-name: CI-KA
+name: CI
 on:
   push:
     branches:
@@ -27,11 +27,6 @@ jobs:
           - ubuntu-latest
         arch:
           - x64
-        include:
-          - version: 'nightly'
-            os: ubuntu-latest
-            arch: x64
-            allow_failure: true
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v1
