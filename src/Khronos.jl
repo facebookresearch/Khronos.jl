@@ -1,11 +1,6 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-"""
-Module fdtd.jl
-
-"""
-
-module fdtd
+module Khronos
 
 using GeometryPrimitives
 using Parameters
