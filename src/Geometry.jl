@@ -36,17 +36,17 @@ TODO: better input checking and sanitizing...
 """
 
 function get_perm_inv(obj::Object, f::Field)
-    perm = get_material_perm_comp(obj.material,f)
+    perm = get_material_perm_comp(obj.material, f)
     if isnothing(perm)
-        perm = get_material_perm(obj.material,f)
+        perm = get_material_perm(obj.material, f)
     end
     return 1.0 / perm
 end
 
 function get_σ(obj::Object, f::Field)
-    σ = get_material_conductivity_comp(obj.material,f)
+    σ = get_material_conductivity_comp(obj.material, f)
     if isnothing(σ)
-        σ = get_material_conductivity(obj.material,f)
+        σ = get_material_conductivity(obj.material, f)
     end
     if isnothing(σ)
         σ = 0.0
@@ -69,7 +69,15 @@ end
 # Geometry data initialization
 # ---------------------------------------------------------- #
 
-function pull_geometry(sim::SimulationData, geometry::Vector{Object}, index, f::Field, idx, ε_inv, σD)
+function pull_geometry(
+    sim::SimulationData,
+    geometry::Vector{Object},
+    index,
+    f::Field,
+    idx,
+    ε_inv,
+    σD,
+)
     if isnothing(index)
         obj = nothing
     else
@@ -77,11 +85,11 @@ function pull_geometry(sim::SimulationData, geometry::Vector{Object}, index, f::
     end
 
     if !isnothing(ε_inv)
-        ε_inv[idx...] = get_perm_inv(obj,f)
+        ε_inv[idx...] = get_perm_inv(obj, f)
     end
 
     if !isnothing(σD)
-        σD[idx...] = get_σ(obj,f)
+        σD[idx...] = get_σ(obj, f)
     end
 
     return
@@ -97,7 +105,8 @@ get_material_perm(mat::Material, ::Electric) = mat.ε
 get_material_perm(mat::Material, ::Magnetic) = mat.μ
 
 function needs_perm(obj::Object, f::Field)
-    return !isnothing(get_material_perm(obj.material,f)) || !isnothing(get_material_perm_comp(obj.material,f))
+    return !isnothing(get_material_perm(obj.material, f)) ||
+           !isnothing(get_material_perm_comp(obj.material, f))
 end
 
 function needs_perm(geometry::Vector{Object}, f::Field)
@@ -118,7 +127,8 @@ get_material_conductivity(mat::Material, ::Electric) = mat.σD
 get_material_conductivity(mat::Material, ::Magnetic) = mat.σB
 
 function needs_conductivities(obj::Object, f::Field)
-    return !isnothing(get_material_conductivity(obj.material, f)) || !isnothing(get_material_conductivity_comp(obj.material, f))
+    return !isnothing(get_material_conductivity(obj.material, f)) ||
+           !isnothing(get_material_conductivity_comp(obj.material, f))
 end
 
 function needs_conductivities(geometry::Vector{Object}, f::Field)
@@ -136,21 +146,45 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         return
     end
 
-    ε_inv_x = needs_perm(geometry,Ex()) ? zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
-    ε_inv_y = needs_perm(geometry,Ey()) ? zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
-    ε_inv_z = needs_perm(geometry,Ez()) ? zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+    ε_inv_x =
+        needs_perm(geometry, Ex()) ?
+        zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
+    ε_inv_y =
+        needs_perm(geometry, Ey()) ?
+        zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
+    ε_inv_z =
+        needs_perm(geometry, Ez()) ?
+        zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
 
-    σDx = needs_conductivities(geometry,Dx()) ? zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
-    σDy = needs_conductivities(geometry,Dy()) ? zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
-    σDz = needs_conductivities(geometry,Dz()) ? zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+    σDx =
+        needs_conductivities(geometry, Dx()) ?
+        zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
+    σDy =
+        needs_conductivities(geometry, Dy()) ?
+        zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
+    σDz =
+        needs_conductivities(geometry, Dz()) ?
+        zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
 
-    μ_inv_x = needs_perm(geometry,Hx()) ? zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
-    μ_inv_y = needs_perm(geometry,Hy()) ? zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
-    μ_inv_z = needs_perm(geometry,Hz()) ? zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+    μ_inv_x =
+        needs_perm(geometry, Hx()) ?
+        zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
+    μ_inv_y =
+        needs_perm(geometry, Hy()) ?
+        zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
+    μ_inv_z =
+        needs_perm(geometry, Hz()) ?
+        zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
 
-    σBx = needs_conductivities(geometry,Bx()) ? zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
-    σBy = needs_conductivities(geometry,By()) ? zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
-    σBz = needs_conductivities(geometry,Bz()) ? zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+    σBx =
+        needs_conductivities(geometry, Bx()) ?
+        zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
+    σBy =
+        needs_conductivities(geometry, By()) ?
+        zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
+    σBz =
+        needs_conductivities(geometry, Bz()) ?
+        zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
 
     """
     there are a lot of ways we could loop over the all the proper points.
@@ -163,54 +197,48 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
     """
 
     # loop over x
-    gv_x = GridVolume(sim,Ex())
-    for iz=1:gv_x.Nz, iy=1:gv_x.Ny, ix=1:gv_x.Nx
+    gv_x = GridVolume(sim, Ex())
+    for iz = 1:gv_x.Nz, iy = 1:gv_x.Ny, ix = 1:gv_x.Nx
         point = grid_volume_idx_to_point(sim, gv_x, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dx(), idx,
-            ε_inv_x, σDx)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), Dx(), idx, ε_inv_x, σDx)
     end
 
-    gv_x = GridVolume(sim,Hx())
-    for iz=1:gv_x.Nz, iy=1:gv_x.Ny, ix=1:gv_x.Nx
+    gv_x = GridVolume(sim, Hx())
+    for iz = 1:gv_x.Nz, iy = 1:gv_x.Ny, ix = 1:gv_x.Nx
         point = grid_volume_idx_to_point(sim, gv_x, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Bx(), idx,
-            μ_inv_x, σBx)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), Bx(), idx, μ_inv_x, σBx)
     end
 
     # loop over y
-    gv_y = GridVolume(sim,Ey())
-    for iz=1:gv_y.Nz, iy=1:gv_y.Ny, ix=1:gv_y.Nx
+    gv_y = GridVolume(sim, Ey())
+    for iz = 1:gv_y.Nz, iy = 1:gv_y.Ny, ix = 1:gv_y.Nx
         point = grid_volume_idx_to_point(sim, gv_y, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dy(), idx,
-            ε_inv_y, σDy)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), Dy(), idx, ε_inv_y, σDy)
     end
 
-    gv_y = GridVolume(sim,Hy())
-    for iz=1:gv_y.Nz, iy=1:gv_y.Ny, ix=1:gv_y.Nx
+    gv_y = GridVolume(sim, Hy())
+    for iz = 1:gv_y.Nz, iy = 1:gv_y.Ny, ix = 1:gv_y.Nx
         point = grid_volume_idx_to_point(sim, gv_y, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), By(), idx,
-            μ_inv_y, σBy)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), By(), idx, μ_inv_y, σBy)
     end
 
     # loop over z
-    gv_z = GridVolume(sim,Ez())
-    for iz=1:gv_z.Nz, iy=1:gv_z.Ny, ix=1:gv_z.Nx
+    gv_z = GridVolume(sim, Ez())
+    for iz = 1:gv_z.Nz, iy = 1:gv_z.Ny, ix = 1:gv_z.Nx
         point = grid_volume_idx_to_point(sim, gv_z, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dz(), idx,
-            ε_inv_z, σDz)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), Dz(), idx, ε_inv_z, σDz)
     end
 
-    gv_z = GridVolume(sim,Hz())
-    for iz=1:gv_z.Nz, iy=1:gv_z.Ny, ix=1:gv_z.Nx
+    gv_z = GridVolume(sim, Hz())
+    for iz = 1:gv_z.Nz, iy = 1:gv_z.Ny, ix = 1:gv_z.Nx
         point = grid_volume_idx_to_point(sim, gv_z, [ix, iy, iz])
-        idx = [ix,iy,iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Bz(), idx,
-            μ_inv_z, σBz)
+        idx = [ix, iy, iz][1:sim.ndims]
+        pull_geometry(sim, geometry, findfirst(point, geometry), Bz(), idx, μ_inv_z, σBz)
     end
 
 
@@ -220,11 +248,9 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         ε_inv_x = isnothing(ε_inv_x) ? ε_inv_x : backend_array(ε_inv_x),
         ε_inv_y = isnothing(ε_inv_y) ? ε_inv_y : backend_array(ε_inv_y),
         ε_inv_z = isnothing(ε_inv_z) ? ε_inv_z : backend_array(ε_inv_z),
-
         σDx = isnothing(σDx) ? σDx : backend_array(σDx),
         σDy = isnothing(σDy) ? σDy : backend_array(σDy),
         σDz = isnothing(σDz) ? σDz : backend_array(σDz),
-
         μ_inv = 1.0, # todo add μ support
         # right now it's either zeros or nothing...
         σBx = isnothing(σBx) ? σBx : backend_array(σBx),
@@ -241,15 +267,21 @@ end
 """ get_mat_conductivity_from_field()
 
 """
-get_mat_conductivity_from_field(sim::SimulationData,::Union{Bx,Hx}) = sim.geometry_data.σBx
-get_mat_conductivity_from_field(sim::SimulationData,::Union{By,Hy}) = sim.geometry_data.σBy
-get_mat_conductivity_from_field(sim::SimulationData,::Union{Bz,Hz}) = sim.geometry_data.σBz
-get_mat_conductivity_from_field(sim::SimulationData,::Union{Dx,Ex}) = sim.geometry_data.σDx
-get_mat_conductivity_from_field(sim::SimulationData,::Union{Dy,Ey}) = sim.geometry_data.σDy
-get_mat_conductivity_from_field(sim::SimulationData,::Union{Dz,Ez}) = sim.geometry_data.σDz
-get_mat_conductivity_from_field(sim::SimulationData,::Magnetic,::X) = sim.geometry_data.σBx
-get_mat_conductivity_from_field(sim::SimulationData,::Magnetic,::Y) = sim.geometry_data.σBy
-get_mat_conductivity_from_field(sim::SimulationData,::Magnetic,::Z) = sim.geometry_data.σBz
-get_mat_conductivity_from_field(sim::SimulationData,::Electric,::X) = sim.geometry_data.σDx
-get_mat_conductivity_from_field(sim::SimulationData,::Electric,::Y) = sim.geometry_data.σDy
-get_mat_conductivity_from_field(sim::SimulationData,::Electric,::Z) = sim.geometry_data.σDz
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{Bx,Hx}) = sim.geometry_data.σBx
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{By,Hy}) = sim.geometry_data.σBy
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{Bz,Hz}) = sim.geometry_data.σBz
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{Dx,Ex}) = sim.geometry_data.σDx
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{Dy,Ey}) = sim.geometry_data.σDy
+get_mat_conductivity_from_field(sim::SimulationData, ::Union{Dz,Ez}) = sim.geometry_data.σDz
+get_mat_conductivity_from_field(sim::SimulationData, ::Magnetic, ::X) =
+    sim.geometry_data.σBx
+get_mat_conductivity_from_field(sim::SimulationData, ::Magnetic, ::Y) =
+    sim.geometry_data.σBy
+get_mat_conductivity_from_field(sim::SimulationData, ::Magnetic, ::Z) =
+    sim.geometry_data.σBz
+get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::X) =
+    sim.geometry_data.σDx
+get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Y) =
+    sim.geometry_data.σDy
+get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Z) =
+    sim.geometry_data.σDz

@@ -9,8 +9,12 @@ using Revise
 using Logging
 using LinearAlgebra
 
-macro status(exs) @logmsg(0, exs) end
-macro verbose(exs) @logmsg(-10, exs) end
+macro status(exs)
+    @logmsg(0, exs)
+end
+macro verbose(exs)
+    @logmsg(-10, exs)
+end
 
 verbose_logger = ConsoleLogger(stderr, -10)
 

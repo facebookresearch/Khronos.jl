@@ -5,7 +5,12 @@ using Statistics
 
 Makie.inline!(true)
 
-function plot2D(sim::SimulationData, component::Field, center::Vector{Real}, size::Vector{Real})
+function plot2D(
+    sim::SimulationData,
+    component::Field,
+    center::Vector{Real},
+    size::Vector{Real},
+)
     prepare_simulation!(sim)
 end
 
@@ -16,34 +21,29 @@ function _get_plane_ranges(gv::GridVolume)
     return (x_range, y_range, z_range)
 end
 
-function _pull_field_slices(
-    sim::SimulationData, 
-    component::Field, 
-    vol::Volume
-)
-    current_fields = Base.Array(get_fields_from_component(sim,component))
+function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
+    current_fields = Base.Array(get_fields_from_component(sim, component))
 
-    vol_x = Volume(vol.center,[0, vol.size[2], vol.size[3]])
-    vol_y = Volume(vol.center,[vol.size[1], 0, vol.size[3]])
-    vol_z = Volume(vol.center,[vol.size[1], vol.size[2], 0])
+    vol_x = Volume(vol.center, [0, vol.size[2], vol.size[3]])
+    vol_y = Volume(vol.center, [vol.size[1], 0, vol.size[3]])
+    vol_z = Volume(vol.center, [vol.size[1], vol.size[2], 0])
 
     gv_x = GridVolume(sim, vol_x, component)
     gv_y = GridVolume(sim, vol_y, component)
     gv_z = GridVolume(sim, vol_z, component)
 
-    YZ_slice = mean(current_fields[_get_plane_ranges(gv_x)...], dims=1)[1,:,:]
-    XZ_slice = mean(current_fields[_get_plane_ranges(gv_y)...], dims=2)[:,1,:]
-    XY_slice = mean(current_fields[_get_plane_ranges(gv_z)...], dims=3)[:,:,1]
+    YZ_slice = mean(current_fields[_get_plane_ranges(gv_x)...], dims = 1)[1, :, :]
+    XZ_slice = mean(current_fields[_get_plane_ranges(gv_y)...], dims = 2)[:, 1, :]
+    XY_slice = mean(current_fields[_get_plane_ranges(gv_z)...], dims = 3)[:, :, 1]
 
     return (XY_slice, XZ_slice, YZ_slice)
 end
 
 function plot2D(
-    sim::SimulationData, 
-    component::Field, 
-    vol::Volume
-    ;
-    plot_geometry::Bool = true
+    sim::SimulationData,
+    component::Field,
+    vol::Volume;
+    plot_geometry::Bool = true,
 )
     prepare_simulation!(sim)
 
@@ -53,10 +53,10 @@ function plot2D(
     (XY_slice, XZ_slice, YZ_slice) = _pull_field_slices(sim, component, vol)
     vmin = min(minimum(YZ_slice), minimum(XZ_slice), minimum(XY_slice))
     vmax = max(maximum(YZ_slice), maximum(XZ_slice), maximum(XY_slice))
-    vmax = max(abs(vmin),vmax)
+    vmax = max(abs(vmin), vmax)
     vmin = -vmax
     fields_alpha = 1.0
-    
+
     if plot_geometry
         # for now use εx... although we should generalize this
         (eps_XY_slice, eps_XZ_slice, eps_YZ_slice) = _pull_field_slices(sim, εx(), vol)
@@ -73,47 +73,56 @@ function plot2D(
     # bluesreds
 
     f = Figure()
-    ax_xy = Axis(f[1, 1],
-        title = "XY",
-        xlabel = "X",
-        ylabel = "Y",
-        aspect=DataAspect(),
-    )
+    ax_xy = Axis(f[1, 1], title = "XY", xlabel = "X", ylabel = "Y", aspect = DataAspect())
     if plot_geometry
-        heatmap!(ax_xy, eps_XY_slice, colormap=:binary, colorrange = (eps_vmin, eps_vmax))
+        heatmap!(ax_xy, eps_XY_slice, colormap = :binary, colorrange = (eps_vmin, eps_vmax))
     end
-    xs = range(-vol_size[1]/2,vol_size[1]/2,length=size(XY_slice)[1])
-    ys = range(-vol_size[2]/2,vol_size[2]/2,length=size(XY_slice)[2])
-    hm = heatmap!(ax_xy, xs, ys, XY_slice, transparency=true, colormap=:bluesreds, colorrange = (vmin, vmax))
-    Colorbar(f[:, 2],hm)
+    xs = range(-vol_size[1] / 2, vol_size[1] / 2, length = size(XY_slice)[1])
+    ys = range(-vol_size[2] / 2, vol_size[2] / 2, length = size(XY_slice)[2])
+    hm = heatmap!(
+        ax_xy,
+        xs,
+        ys,
+        XY_slice,
+        transparency = true,
+        colormap = :bluesreds,
+        colorrange = (vmin, vmax),
+    )
+    Colorbar(f[:, 2], hm)
     # FIXME wrong aspect ratio
-    ax_xz = Axis(f[1, 3],
-        title = "XZ",
-        xlabel = "X",
-        ylabel = "Z",
-        aspect=DataAspect(),
-    )
+    ax_xz = Axis(f[1, 3], title = "XZ", xlabel = "X", ylabel = "Z", aspect = DataAspect())
     if plot_geometry
-        heatmap!(ax_xz, eps_XZ_slice, colormap=:binary, colorrange = (eps_vmin, eps_vmax))
+        heatmap!(ax_xz, eps_XZ_slice, colormap = :binary, colorrange = (eps_vmin, eps_vmax))
     end
-    xs = range(-vol_size[1]/2,vol_size[1]/2,length=size(XZ_slice)[1])
-    zs = range(-vol_size[3]/2,vol_size[3]/2,length=size(XZ_slice)[2])
-    hm = heatmap!(ax_xz, xs, zs, XZ_slice, transparency=true, colormap=:bluesreds, colorrange = (vmin, vmax))
-    Colorbar(f[:, 4],hm)
+    xs = range(-vol_size[1] / 2, vol_size[1] / 2, length = size(XZ_slice)[1])
+    zs = range(-vol_size[3] / 2, vol_size[3] / 2, length = size(XZ_slice)[2])
+    hm = heatmap!(
+        ax_xz,
+        xs,
+        zs,
+        XZ_slice,
+        transparency = true,
+        colormap = :bluesreds,
+        colorrange = (vmin, vmax),
+    )
+    Colorbar(f[:, 4], hm)
 
-    ax_yz = Axis(f[1, 5],
-        title = "YZ",
-        xlabel = "Y",
-        ylabel = "Z",
-        aspect=DataAspect(),
-    )
+    ax_yz = Axis(f[1, 5], title = "YZ", xlabel = "Y", ylabel = "Z", aspect = DataAspect())
     if plot_geometry
-        heatmap!(ax_yz, eps_YZ_slice, colormap=:binary, colorrange = (eps_vmin, eps_vmax))
+        heatmap!(ax_yz, eps_YZ_slice, colormap = :binary, colorrange = (eps_vmin, eps_vmax))
     end
-    ys = range(-vol_size[2]/2,vol_size[2]/2,length=size(YZ_slice)[1])
-    zs = range(-vol_size[3]/2,vol_size[3]/2,length=size(YZ_slice)[2])
-    hm = heatmap!(ax_yz, ys, zs, YZ_slice, transparency=true, colormap=:bluesreds, colorrange = (vmin, vmax))
-    Colorbar(f[:, end+1],hm)
+    ys = range(-vol_size[2] / 2, vol_size[2] / 2, length = size(YZ_slice)[1])
+    zs = range(-vol_size[3] / 2, vol_size[3] / 2, length = size(YZ_slice)[2])
+    hm = heatmap!(
+        ax_yz,
+        ys,
+        zs,
+        YZ_slice,
+        transparency = true,
+        colormap = :bluesreds,
+        colorrange = (vmin, vmax),
+    )
+    Colorbar(f[:, end+1], hm)
     return f
 end
 
@@ -123,34 +132,37 @@ end
 TBW
 """
 function plot_monitor(monitor::DFTMonitor, frequency_idx::Int)
-    freq_data = get_dft_fields(monitor)[:,:,:,frequency_idx]
+    freq_data = get_dft_fields(monitor)[:, :, :, frequency_idx]
     if size(freq_data)[1] == 1
-        freq_data = freq_data[1,:,:]
+        freq_data = freq_data[1, :, :]
     elseif size(freq_data)[2] == 1
-        freq_data = freq_data[:,1,:]
+        freq_data = freq_data[:, 1, :]
     elseif size(freq_data)[3] == 1
-        freq_data = freq_data[:,:,1]
+        freq_data = freq_data[:, :, 1]
     else
         error("Invalid 3D array (size: $(size(freq_data)))")
     end
 
     freq_data = real(freq_data)
-    
+
     f = Figure()
-    ax_xy = Axis(f[1, 1],
-     aspect=DataAspect(),
-    )
+    ax_xy = Axis(f[1, 1], aspect = DataAspect())
 
     fields_vmin = minimum(freq_data)
     fields_vmax = maximum(freq_data)
     fields_vmax = max(abs(fields_vmin), abs(fields_vmax))
-    fields_vmin = - fields_vmax
+    fields_vmin = -fields_vmax
 
     #TODO check if max==min
 
-    hm = heatmap!(ax_xy, freq_data, colormap=:bluesreds, colorrange = (fields_vmin, fields_vmax))
+    hm = heatmap!(
+        ax_xy,
+        freq_data,
+        colormap = :bluesreds,
+        colorrange = (fields_vmin, fields_vmax),
+    )
     Colorbar(f[:, end+1], hm)
-    
+
     resize_to_layout!(f)
     return f
 end
@@ -172,9 +184,9 @@ TBW
 """
 function plot_timesource(sim::SimulationData, time_source::TimeSource, frequencies)
     prepare_simulation!(sim)
-    
+
     # Pull the time-series data
-    t = range(start=0, stop=get_cutoff(time_source), step=sim.Δt)
+    t = range(start = 0, stop = get_cutoff(time_source), step = sim.Δt)
     src_amplitude = zeros(size(t))
     for n in eachindex(t)
         src_amplitude[n] = eval_time_source(time_source, t[n])
@@ -186,18 +198,15 @@ function plot_timesource(sim::SimulationData, time_source::TimeSource, frequenci
     PSD = PSD / maximum(PSD)
 
     # Set up the plot
-    f = Figure(resolution=(800,400))
-    ax1 = Axis(
-        f[1, 1],
-        xlabel = "Time (s)",
-        ylabel = "Source amplitude"
-        )
+    f = Figure(resolution = (800, 400))
+    ax1 = Axis(f[1, 1], xlabel = "Time (s)", ylabel = "Source amplitude")
     lines!(ax1, t, real.(src_amplitude), color = :red)
     ax2 = Axis(
-        f[1, 2], yscale = log10,
+        f[1, 2],
+        yscale = log10,
         xlabel = "Wavelength",
-        ylabel = "Power spectral density (a.u.)"
-        )
+        ylabel = "Power spectral density (a.u.)",
+    )
     lines!(ax2, 1 ./ frequencies, PSD, color = :blue)
 
     resize_to_layout!(f)
@@ -206,5 +215,5 @@ function plot_timesource(sim::SimulationData, time_source::TimeSource, frequenci
 end
 
 function plot_source(sim::SimulationData, source::Source)
-    
+
 end
