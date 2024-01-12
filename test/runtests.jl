@@ -2,7 +2,7 @@
 
 using Test
 
-@testset "FDTD.jl" begin
+@testset "Khronos.jl" begin
 
     include("test_interpolation.jl")
     include("test_grid_volume.jl")

@@ -8,11 +8,11 @@
 # integral as one moves the integrating window. We use this property to verify
 # the weights are being calculated correctly.
 
-import fdtd
+import Khronos
 using Test
 
 const USE_GPU = false;
-fdtd.environment!(USE_GPU, Float64, 2)
+Khronos.choose_backend()
 
 Δx = 0.1;
 Δy = 0.1;
@@ -27,25 +27,25 @@ w = zeros(size(x, 1), size(y, 1))
 function restrict_to_array!(arr, volume)
     for (iy, y_val) in enumerate(y)
         for (ix, x_val) in enumerate(x)
-            arr[ix, iy] = fdtd.compute_interpolation_weight([x_val, y_val, 0.0], volume, ndims, Δx, Δy, Δz)
+            arr[ix, iy] = Khronos.compute_interpolation_weight([x_val, y_val, 0.0], volume, ndims, Δx, Δy, Δz)
         end
     end
 end
 
 @testset "Single-point and line restrictions" begin
-    pt_volume = fdtd.Volume(center=[0, 0, 0], size=[0, 0, 0])
+    pt_volume = Khronos.Volume(center=[0, 0, 0], size=[0, 0, 0])
     restrict_to_array!(w, pt_volume)
     @test sum(w) ≈ 1.0 atol = 1e-15
     
-    pt_volume = fdtd.Volume(center=[-0.12, -0.26, 0], size=[0, 0, 0])
+    pt_volume = Khronos.Volume(center=[-0.12, -0.26, 0], size=[0, 0, 0])
     restrict_to_array!(w, pt_volume)
     @test sum(w) ≈ 1.0 atol = 1e-15
 
-    line_x_volume = fdtd.Volume(center=[0.14, -0.21, 0], size=[5Δx, 0, 0])
+    line_x_volume = Khronos.Volume(center=[0.14, -0.21, 0], size=[5Δx, 0, 0])
     restrict_to_array!(w, line_x_volume)
     @test sum(w) * Δx ≈ 5Δx atol = 1e-15
 
-    line_y_volume = fdtd.Volume(center=[0.14, -0.21, 0], size=[0, 5Δy, 0])
+    line_y_volume = Khronos.Volume(center=[0.14, -0.21, 0], size=[0, 5Δy, 0])
     restrict_to_array!(w, line_y_volume)
     @test (sum(w)) * Δy ≈ 5Δy atol = 1e-15
 end
@@ -54,7 +54,7 @@ end
     sx = 0.4
     sy = 0.4
     for ix in -1.6:0.4:1.6
-        square_volume = fdtd.Volume(center=[ix * Δx, ix * Δx, 0], size=[sx, sy, 0])
+        square_volume = Khronos.Volume(center=[ix * Δx, ix * Δx, 0], size=[sx, sy, 0])
         restrict_to_array!(w, square_volume)
         @test (sum(w)) * Δx * Δy ≈ sx * sy atol = 1e-15
     end
@@ -63,7 +63,7 @@ end
     sx = 0.4
     sy = 0.5
     for ix in -1.6:0.4:1.6
-        square_volume = fdtd.Volume(center=[ix * Δx, ix * Δx, 0], size=[sx, sy, 0])
+        square_volume = Khronos.Volume(center=[ix * Δx, ix * Δx, 0], size=[sx, sy, 0])
         restrict_to_array!(w, square_volume)
         @test (sum(w)) * Δx * Δy ≈ sx * sy atol = 1e-15
     end
@@ -73,7 +73,7 @@ end
     sx = 5.0
     sy = 0.5
     for ix in -1.6:0.4:1.6
-        line_x_volume = fdtd.Volume(center=[0.14, ix * Δy, 0], size=[sx * Δx, sy * Δy, 0])
+        line_x_volume = Khronos.Volume(center=[0.14, ix * Δy, 0], size=[sx * Δx, sy * Δy, 0])
         restrict_to_array!(w, line_x_volume)
         @test sum(w) ≈ sx * sy atol = 1e-14
     end
@@ -81,7 +81,7 @@ end
     sx = 0.4
     sy = 6.0
     for ix in -0.8:0.4:0.8
-        line_x_volume = fdtd.Volume(center=[ix * Δx, 0.14, 0], size=[sx * Δx, sy * Δy, 0])
+        line_x_volume = Khronos.Volume(center=[ix * Δx, 0.14, 0], size=[sx * Δx, sy * Δy, 0])
         restrict_to_array!(w, line_x_volume)
         @test sum(w) ≈ sx * sy atol = 1e-14
     end
