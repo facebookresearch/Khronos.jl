@@ -19,22 +19,22 @@ function build_simulation(λ, resolution)
     sxy = 2 * dpml + monitor_xy
     sz = 2 * dpml + 2 * monitor_height
     cell_size = [sxy, sxy, sz]
-    
+
     boundary_layers = [[dpml, dpml], [dpml, dpml], [dpml, dpml]]
 
     sources = [
         fdtd.PlaneWaveSource(
             time_profile = fdtd.ContinuousWaveSource(fcen = 1 / λ),
-            center = [0,0,0],
+            center = [0, 0, 0],
             size = [Inf, Inf, 0],
             k_vector = [0.0, 0.0, 1.0],
             polarization_angle = 0.0,
-        )
+        ),
     ]
-    
+
     sim = fdtd.Simulation(
         cell_size = cell_size,
-        cell_center = [0.0,0.0,0.0],
+        cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
         sources = sources,
         boundaries = boundary_layers,
@@ -47,5 +47,10 @@ end
 resolution = 20.0
 
 sim = build_simulation(λ, resolution)
-fdtd.run(sim, until=60)
-scene = fdtd.plot2D(sim, fdtd.Ex(), fdtd.Volume([0., 0., 0.],[2.0, 2.0, 4.0]), plot_geometry=false)
+fdtd.run(sim, until = 60)
+scene = fdtd.plot2D(
+    sim,
+    fdtd.Ex(),
+    fdtd.Volume([0.0, 0.0, 0.0], [2.0, 2.0, 4.0]),
+    plot_geometry = false,
+)

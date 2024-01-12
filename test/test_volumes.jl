@@ -9,11 +9,11 @@ const USE_GPU = false;
 fdtd.environment!(USE_GPU, Float64, 2)
 
 sim = fdtd.Simulation{fdtd.Data.Array}(
-    cell_size=[10.0, 10.0, 0.0],
-    cell_center=[0.0, 0.0, 0.0],
-    resolution=1,
-    sources=[],
-    boundaries=[[1.0, 1.0], [1.0, 1.0], [0.0, 0.0]]
+    cell_size = [10.0, 10.0, 0.0],
+    cell_center = [0.0, 0.0, 0.0],
+    resolution = 1,
+    sources = [],
+    boundaries = [[1.0, 1.0], [1.0, 1.0], [0.0, 0.0]],
 )
 
 @testset "Simulation-sized GridVolumes" begin

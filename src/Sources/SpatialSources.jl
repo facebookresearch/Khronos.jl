@@ -49,7 +49,7 @@ end
 Returns a `Volume`` object for the source.
 """
 function get_source_volume(source::Source)
-    return Volume(center=get_source_center(source), size=get_source_size(source))
+    return Volume(center = get_source_center(source), size = get_source_size(source))
 end
 
 """
@@ -108,13 +108,13 @@ function UniformSource(;
     amplitude::Number = 1.0,
     center::AbstractVector = [0.0, 0.0, 0.0],
     size::AbstractVector = [0.0, 0.0, 0.0],
-    )
+)
     UniformSourceData(
-        time_profile=time_profile,
-        component=component,
-        amplitude=amplitude,
-        center=center,
-        size=size,
+        time_profile = time_profile,
+        component = component,
+        amplitude = amplitude,
+        center = center,
+        size = size,
     )
 end
 
@@ -135,7 +135,7 @@ end
     center::AbstractVector = [0.0, 0.0, 0.0]
     size::AbstractVector = [0.0, 0.0, 0.0]
     amplitude::Number = 1.0
-    source_profile::Dict{<:Field, <:Function}
+    source_profile::Dict{<:Field,<:Function}
 end
 
 """
@@ -170,7 +170,7 @@ function EquivalentSource(;
     # Sanitize the input
     required_field_components = [Ex(), Ey(), Ez(), Hx(), Hy(), Hz()]
     for component in required_field_components
-        if !haskey(fields,component)
+        if !haskey(fields, component)
             error("An equivalent source requires all 6 field components.")
         end
         if ndims(fields[component]) != 3
@@ -178,7 +178,7 @@ function EquivalentSource(;
         end
     end
 
-    src_vol = Volume(center=center, size=size)
+    src_vol = Volume(center = center, size = size)
     normal_vector = get_normal_vector(src_vol)
     transverse_fields = plane_normal_direction(src_vol)
 
@@ -188,17 +188,35 @@ function EquivalentSource(;
     Hx = fields[Hx()]
     Hy = fields[Hy()]
     Hz = fields[Hz()]
-    
+
     current_sources = dict(
         # Electric current J = nHat x H
-        Ex() => gen_interpolator_from_array(normal_vector[1] * Hz .- normal_vector[2] * Hy, src_vol),
-        Ey() => gen_interpolator_from_array(normal_vector[2] * Hx .- normal_vector[0] * Hz, src_vol),
-        Ez() => gen_interpolator_from_array(normal_vector[0] * Hy .- normal_vector[1] * Hx, src_vol),
+        Ex() => gen_interpolator_from_array(
+            normal_vector[1] * Hz .- normal_vector[2] * Hy,
+            src_vol,
+        ),
+        Ey() => gen_interpolator_from_array(
+            normal_vector[2] * Hx .- normal_vector[0] * Hz,
+            src_vol,
+        ),
+        Ez() => gen_interpolator_from_array(
+            normal_vector[0] * Hy .- normal_vector[1] * Hx,
+            src_vol,
+        ),
         # Magnetic current K = - nHat x E
-        Hx() => gen_interpolator_from_array(normal_vector[2] * Ey .- normal_vector[1] * Ez, src_vol),
-        Hy() => gen_interpolator_from_array(normal_vector[0] * Ez .- normal_vector[2] * Ex, src_vol),
-        Hz() => gen_interpolator_from_array(normal_vector[1] * Ex .- normal_vector[0] * Ey, src_vol),
-    )    
+        Hx() => gen_interpolator_from_array(
+            normal_vector[2] * Ey .- normal_vector[1] * Ez,
+            src_vol,
+        ),
+        Hy() => gen_interpolator_from_array(
+            normal_vector[0] * Ez .- normal_vector[2] * Ex,
+            src_vol,
+        ),
+        Hz() => gen_interpolator_from_array(
+            normal_vector[1] * Ex .- normal_vector[0] * Ey,
+            src_vol,
+        ),
+    )
 
     # Only create current sources we really need
     for component in required_field_components
@@ -220,7 +238,11 @@ function get_source_components(source::EquivalentSourceData)
     return collect(keys(source.source_profile))
 end
 
-function get_source_profile(source::EquivalentSourceData, point::Vector{<:Real}, component::Field)
+function get_source_profile(
+    source::EquivalentSourceData,
+    point::Vector{<:Real},
+    component::Field,
+)
     return source.source_profile[component](point)
 end
 
@@ -298,40 +320,42 @@ function PlaneWaveSource(;
     polarization_angle::Real,
     angle_theta::Union{Real,Nothing} = nothing,
     angle_phi::Union{Real,Nothing} = nothing,
-    k_vector::Union{AbstractVector{<:Real}, Nothing} = nothing,
+    k_vector::Union{AbstractVector{<:Real},Nothing} = nothing,
 )::PlaneWaveSourceData
-    
+
     if isnothing(k_vector) && isnothing(angle_theta) && isnothing(angle_phi)
         error("Must either specify a `k_vector` or `angle_phi` and `angle_theta`.")
     end
 
     # Compute k-vector from polar angle representation.
     if isnothing(k_vector)
-        k_vector = [sin(angle_phi) * cos(angle_theta), sin(angle_phi) * sin(angle_theta), cos(angle_phi)]
+        k_vector = [
+            sin(angle_phi) * cos(angle_theta),
+            sin(angle_phi) * sin(angle_theta),
+            cos(angle_phi),
+        ]
     end
-    
-    k = Real(2 * π * get_frequency(time_profile) * sqrt( ε * μ))
+
+    k = Real(2 * π * get_frequency(time_profile) * sqrt(ε * μ))
     k_vector = k_vector / norm(k_vector)
 
     # Injection plane normal direction
-    normal_direction = get_normal_vector(Volume(center=center,size=size))
+    normal_direction = get_normal_vector(Volume(center = center, size = size))
 
     # Compute the normal vector of the plane formed by the injection plane
     # and direction of propagation.
-    if dot(normal_direction,k_vector) == 1.0
+    if dot(normal_direction, k_vector) == 1.0
         # Make sure that the vectors are aligned with the cartesian axis at this
         # point.
         if count(==(0.0), normal_direction) != 2
-            error("Invalid injection plane normal direction $(normal_direction) and k vector $(k_vector).")
+            error(
+                "Invalid injection plane normal direction $(normal_direction) and k vector $(k_vector).",
+            )
         end
-        
+
         # If the direction of propogation is inline with the normal, then S and
         # P are degenerate. So we establish the following convention.
-        pol_mapping = Dict(
-            1 => [0.0, 1.0, 0.0],
-            2 => [0.0, 0.0, 1.0],
-            3 => [1.0, 0.0, 0.0],
-        )
+        pol_mapping = Dict(1 => [0.0, 1.0, 0.0], 2 => [0.0, 0.0, 1.0], 3 => [1.0, 0.0, 0.0])
         pol_plane_normal = pol_mapping[findfirst(!=(0.0), k_vector)]
     else
 
@@ -343,8 +367,8 @@ function PlaneWaveSource(;
     # propagation.
     # https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
     polarization_vector = (
-        pol_plane_normal * cos(polarization_angle) + 
-        cross(k_vector,pol_plane_normal) * sin(polarization_angle)
+        pol_plane_normal * cos(polarization_angle) +
+        cross(k_vector, pol_plane_normal) * sin(polarization_angle)
     )
 
     return PlaneWaveSourceData(
@@ -370,12 +394,15 @@ end
 Computes the electric current-source polarization scaling term (Ĵ₀) for a planewave.
 """
 function get_planewave_polarization_scaling(
-    source::PlaneWaveSourceData, 
-    component::Electric
+    source::PlaneWaveSourceData,
+    component::Electric,
 )::Number
     Z0 = sqrt(source.μ / source.ε)
     # Ĵ = n̂×(k̂×Ê) / Z₀
-    return (cross(source.normal_direction,cross(source.k_vector, 1 / Z0 * source.polarization )))[int_from_direction(component)]
+    return (cross(
+        source.normal_direction,
+        cross(source.k_vector, 1 / Z0 * source.polarization),
+    ))[int_from_direction(component)]
 end
 
 """
@@ -384,11 +411,13 @@ end
 Computes the magnetic current-source polarization scaling term (M̂₀) for a planewave.
 """
 function get_planewave_polarization_scaling(
-    source::PlaneWaveSourceData, 
-    component::Magnetic
+    source::PlaneWaveSourceData,
+    component::Magnetic,
 )::Number
     # M̂ = -n̂×Ê
-    return -(cross(source.normal_direction, source.polarization))[int_from_direction(component)]
+    return -(cross(source.normal_direction, source.polarization))[int_from_direction(
+        component,
+    )]
 end
 
 """
@@ -399,7 +428,8 @@ Returns the relevant current source components for a planewave source.
 In particular, only non-zero, transverse components are relevant.
 """
 function get_source_components(source::PlaneWaveSourceData)
-    transverse_components = get_plane_transverse_fields(Volume(center=source.center,size=source.size))
+    transverse_components =
+        get_plane_transverse_fields(Volume(center = source.center, size = source.size))
     source_components = Field[]
     for component in transverse_components
         if get_planewave_polarization_scaling(source, component) != 0.0
@@ -414,7 +444,11 @@ end
 
 Computes a plane wave current source for a given component at a point in space.
 """
-function get_source_profile(source::PlaneWaveSourceData, point::Vector{<:Real}, component::Field)
+function get_source_profile(
+    source::PlaneWaveSourceData,
+    point::Vector{<:Real},
+    component::Field,
+)
     pol_factor = get_planewave_polarization_scaling(source, component)
     return pol_factor * exp(-im * point ⋅ source.k_vector * source.k)
 end
@@ -476,17 +510,17 @@ function GaussianBeamSource(;
     polarization::Vector{<:Number},
 )::GaussianBeamData
     return GaussianBeamData(
-        time_profile=time_profile,
-        center=center,
-        size=size,
-        amplitude=amplitude,
-        ε=ε,
-        μ=μ,
-        beam_center=beam_center,
-        beam_waist=beam_waist,
-        k_vector=k_vector,
-        polarization=polarization,
-        normal_direction = get_normal_vector(Volume(center=center,size=size)),
+        time_profile = time_profile,
+        center = center,
+        size = size,
+        amplitude = amplitude,
+        ε = ε,
+        μ = μ,
+        beam_center = beam_center,
+        beam_waist = beam_waist,
+        k_vector = k_vector,
+        polarization = polarization,
+        normal_direction = get_normal_vector(Volume(center = center, size = size)),
     )
 end
 
@@ -498,32 +532,29 @@ end
 
 TBW
 """
-function get_gaussianbeam_field_profiles(
-    source::GaussianBeamData, 
-    point::Vector{<:Real}
-)
+function get_gaussianbeam_field_profiles(source::GaussianBeamData, point::Vector{<:Real})
     # Create useful variables
     ε_R = real(source.ε)
     μ_R = real(source.μ)
-    k = ComplexF64(2 * π * get_frequency(source.time_profile) * sqrt( ε_R * μ_R))
+    k = ComplexF64(2 * π * get_frequency(source.time_profile) * sqrt(ε_R * μ_R))
     ZR = sqrt(μ_R / ε_R)
     zvE0 = source.polarization
-    z0 = k * source.beam_waist ^ 2 / 2.0
+    z0 = k * source.beam_waist^2 / 2.0
     kz0 = k * z0
 
     # Relative coordinates
     xrel = point - source.beam_center
     zHat = source.k_vector / norm(source.k_vector)
-    rho = norm(cross(zHat, xrel)) 
+    rho = norm(cross(zHat, xrel))
     z = xrel ⋅ zHat
     use_rescaled_FG = false
     zc = z - im * z0
-    Rsq = rho * rho + zc * zc 
+    Rsq = rho * rho + zc * zc
     R = sqrt(Rsq)
     kR = k * R
     kRsq = kR * kR
     kR3 = kRsq * kR
-    
+
     # Large kR
     if (abs(kR) > 1e-15)
         # Large imag kR
@@ -536,20 +567,20 @@ function get_gaussianbeam_field_profiles(
             sinkR = -im * 0.5 * (ExpI * ExpMinus - conj(ExpI) * ExpPlus)
         else
             coskR = cos(kR)
-            sinkR = sin(kR)           
+            sinkR = sin(kR)
         end
         # Calculate f and g
-        f = -3 * (coskR/kRsq - sinkR/kR3)
+        f = -3 * (coskR / kRsq - sinkR / kR3)
         g = 1.5 * (sinkR / kR + coskR / kRsq - sinkR / kR3)
         fmgbRsq = (f - g) / Rsq
 
-    # Small kR
+        # Small kR
     else
         # Series expansion
         kR4 = kRsq * kRsq
-        f = kR4 / 280. - kRsq / 10. + 1.0
-        g = kR4 * 3. / 280. - kRsq / 5. + 1.0
-        fmgbRsq = (kR4 / 5040. - kRsq / 140. + 0.1) * (k*k)
+        f = kR4 / 280.0 - kRsq / 10.0 + 1.0
+        g = kR4 * 3.0 / 280.0 - kRsq / 5.0 + 1.0
+        fmgbRsq = (kR4 / 5040.0 - kRsq / 140.0 + 0.1) * (k * k)
     end
 
     # New variables
@@ -561,41 +592,41 @@ function get_gaussianbeam_field_profiles(
 
     # If sufficient field, fill E and H
     if (rnorm > 1e-6)
-        xHat = real.(zvE0) ./ rnorm 
+        xHat = real.(zvE0) ./ rnorm
         yHat = cross(zHat, xHat)
         norm_hat = hcat(xHat, yHat, zHat)
 
         x = xHat ⋅ xrel
         y = yHat ⋅ xrel
 
-        Ex = g + fmgbRsq * x * x + i2fk * zc 
+        Ex = g + fmgbRsq * x * x + i2fk * zc
         Ey = fmgbRsq * x * y
         Ez = fmgbRsq * x * zc - i2fk * x
         E_norm = [Ex, Ey, Ez]
 
-        Hx = Ey 
+        Hx = Ey
         Hy = g + fmgbRsq * y * y + i2fk * zc
         Hz = fmgbRsq * y * zc - i2fk * y
         H_norm = [Hx, Hy, Hz]
-        
+
         E = E .+ rnorm * (norm_hat * E_norm)
         H = H .+ rnorm * (norm_hat * H_norm)
     end
 
     if (inorm > 1e-6)
-        xHat = imag.(zvE0) / inorm 
+        xHat = imag.(zvE0) / inorm
         yHat = cross(zHat, xHat)
         norm_hat = hcat(xHat, yHat, zHat)
 
         x = xHat ⋅ xrel
         y = yHat ⋅ xrel
 
-        Ex = g + fmgbRsq * x .* x + i2fk * zc 
+        Ex = g + fmgbRsq * x .* x + i2fk * zc
         Ey = fmgbRsq * x .* y
         Ez = fmgbRsq * x * zc - i2fk * x
         E_norm = [Ex, Ey, Ez]
-        
-        Hx = 0.0 
+
+        Hx = 0.0
         Hy = g + fmgbRsq * y * y + i2fk * zc
         Hz = fmgbRsq * y * zc - i2fk * y
         H_norm = [Hx, Hy, Hz]
@@ -603,38 +634,40 @@ function get_gaussianbeam_field_profiles(
         E = E .+ inorm * (norm_hat * E_nor)
         H = H .+ inorm * (norm_hat * H_norm)
     end
-    
+
     # Rescale as necessary
     if (use_rescaled_FG)
-        E_orig = 3. / (2 * kz0 * kz0 * kz0) * (kz0*(kz0-1)+0.5*(1.0-exp(-2.0*kz0)))
+        E_orig =
+            3.0 / (2 * kz0 * kz0 * kz0) * (kz0 * (kz0 - 1) + 0.5 * (1.0 - exp(-2.0 * kz0)))
     else
-        E_orig = 3. / (2 * kz0 * kz0 * kz0) * (exp(kz0)*kz0*(kz0-1) + sinh(kz0))
+        E_orig = 3.0 / (2 * kz0 * kz0 * kz0) * (exp(kz0) * kz0 * (kz0 - 1) + sinh(kz0))
     end
 
     # Rescale
     E /= E_orig
-    H /= (E_orig*ZR)
-    
+    H /= (E_orig * ZR)
+
     return E, H
 end
 
 function get_source_profile(
-    source::GaussianBeamData, 
-    point::Vector{<:Real}, 
-    component::Field
+    source::GaussianBeamData,
+    point::Vector{<:Real},
+    component::Field,
 )
     E, H = get_gaussianbeam_field_profiles(source, point)
     if is_electric(component)
         # Electric current source, Ĵ = n̂×Ĥ
-        return cross(source.normal_direction,H)[int_from_direction(component)]
+        return cross(source.normal_direction, H)[int_from_direction(component)]
     else
         # Magnetic current source, M̂ = -n̂×Ê
-        return -cross(source.normal_direction,E)[int_from_direction(component)]
+        return -cross(source.normal_direction, E)[int_from_direction(component)]
     end
 end
 
 function get_source_components(source::GaussianBeamData)
-    transverse_components = get_plane_transverse_fields(Volume(center=source.center,size=source.size))
+    transverse_components =
+        get_plane_transverse_fields(Volume(center = source.center, size = source.size))
     source_components = Field[]
     for component in transverse_components
         # TODO: it would be great to work out which components are all zero...

@@ -3,4 +3,3 @@
 """
 Tests the initialization of simulation objects
 """
-

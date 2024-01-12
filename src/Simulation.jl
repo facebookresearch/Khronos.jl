@@ -24,7 +24,7 @@ round_time(sim::SimulationData)::Float64 = Float64(sim.timestep * sim.Δt)
 
 Determine how many timesteps are need to step a certain time period.
 """
-time_to_steps(sim::SimulationData, time::Real)::Int = floor(Int, time/sim.Δt)
+time_to_steps(sim::SimulationData, time::Real)::Int = floor(Int, time / sim.Δt)
 
 """
     get_sim_dims(sim)
@@ -58,22 +58,22 @@ function prepare_simulation!(sim::SimulationData)
     @info("Preparing simulation object...")
 
     # prepare geometry
-    init_geometry(sim,sim.geometry)
+    init_geometry(sim, sim.geometry)
 
     # prepare boundaries
-    init_boundaries(sim,sim.boundaries)
+    init_boundaries(sim, sim.boundaries)
 
     # prepare sources
-    add_sources(sim,sim.sources)
+    add_sources(sim, sim.sources)
 
     # determine dimensionality
     get_sim_dims(sim)
 
     # prepare fields
-    init_fields(sim,sim.dimensionality)
+    init_fields(sim, sim.dimensionality)
 
     # prepare time and dft monitors
-    init_monitors(sim,sim.monitors)
+    init_monitors(sim, sim.monitors)
 
     sim.is_prepared = true
 
@@ -148,18 +148,16 @@ TBW
 function stop_when_dft_decayed(;
     tolerance::Real = 1e-6,
     minimum_runtime::Real = 0.0,
-    maximum_runtime::Real = Inf)::Function
+    maximum_runtime::Real = Inf,
+)::Function
 
     if minimum_runtime > maximum_runtime
-        error("Minimum runtime ($minimum_runtime) cannot be greater than maximum runtime ($maximum_runtime).")
+        error(
+            "Minimum runtime ($minimum_runtime) cannot be greater than maximum runtime ($maximum_runtime).",
+        )
     end
 
-    closure = Dict(
-        "previous_fields"=> 0.0,
-        "t0"=> 0.0,
-        "dt"=>0.0,
-        "maxchange"=>0.0
-    )
+    closure = Dict("previous_fields" => 0.0, "t0" => 0.0, "dt" => 0.0, "maxchange" => 0.0)
 
     function _stop(sim::SimulationData)::Bool
         if round_time(sim) < minimum_runtime
@@ -199,17 +197,14 @@ function stop_when_dft_decayed(;
     return _stop
 end
 
-function run_benchmark(
-    sim::SimulationData,
-    until::Int,
-)
+function run_benchmark(sim::SimulationData, until::Int)
     if (!sim.is_prepared)
         prepare_simulation!(sim)
     end
 
     @info("Running simulation...")
 
-    t_tic=time()
+    t_tic = time()
     for it = 1:until
         if (it == 10)
             t_tic = time()
@@ -222,8 +217,8 @@ function run_benchmark(
     @info("===========================================")
     @info("Total number of iterations: $until.")
     @info("Total simulation time: $time_s seconds.")
-    num_voxels = sim.Nx*sim.Ny*sim.Nz
-    steprate = num_voxels * (until-10) / time_s / 1e6
+    num_voxels = sim.Nx * sim.Ny * sim.Nz
+    steprate = num_voxels * (until - 10) / time_s / 1e6
     @info("Simulation speed:  $steprate MCells/S.")
     @info("===========================================")
 
@@ -238,7 +233,8 @@ TBW
 dft_fields_norm(fields_array::AbstractArray) = sqrt(sum(abs.(fields_array) .^ 2))
 dft_fields_norm(monitor::DFTMonitorData) = dft_fields_norm(monitor.fields)
 dft_fields_norm(monitor::MonitorData) = 0.0 # default case
-dft_fields_norm(monitor_list::Vector{<:MonitorData}) = sum([dft_fields_norm(m) for m in monitor_list])
+dft_fields_norm(monitor_list::Vector{<:MonitorData}) =
+    sum([dft_fields_norm(m) for m in monitor_list])
 dft_fields_norm(sim::SimulationData) = dft_fields_norm(sim.monitor_data)
 
 export Simulation

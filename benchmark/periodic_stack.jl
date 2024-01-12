@@ -31,50 +31,49 @@ function build_periodic_stack(resolution::Real, z_scaling::Real)
     src_z = (-z_thickness / 2.0) + 1.0
     sources = [
         fdtd.UniformSource(
-        time_profile = fdtd.ContinuousWaveSource(fcen=1.),
-        component = fdtd.Ex(),
-        center = [0., 0., src_z],
-        size = [Inf, Inf, 0.]
+            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
+            component = fdtd.Ex(),
+            center = [0.0, 0.0, src_z],
+            size = [Inf, Inf, 0.0],
         ),
         fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen=1.),
+            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
             component = fdtd.Hy(),
-            center = [0., 0., src_z],
-            size = [Inf, Inf, 0.]
+            center = [0.0, 0.0, src_z],
+            size = [Inf, Inf, 0.0],
         ),
     ]
 
-    mat_low = fdtd.Material(ε=1.5)
-    mat_mid = fdtd.Material(ε=2.5)
-    mat_high = fdtd.Material(ε=3.5)
+    mat_low = fdtd.Material(ε = 1.5)
+    mat_mid = fdtd.Material(ε = 2.5)
+    mat_high = fdtd.Material(ε = 3.5)
 
-    materials = [
-        mat_low, mat_mid, mat_low, mat_high, mat_mid, mat_high
-    ]
-    thicknesses = [
-        0.5, 1.0, 0.75, 1.0, 0.25, 0.5
-    ] * z_scaling
+    materials = [mat_low, mat_mid, mat_low, mat_high, mat_mid, mat_high]
+    thicknesses = [0.5, 1.0, 0.75, 1.0, 0.25, 0.5] * z_scaling
 
-    z_cur = -sum(thicknesses)/2
+    z_cur = -sum(thicknesses) / 2
     geometry = []
-    for (current_mat, current_thick) in zip(materials,thicknesses)
+    for (current_mat, current_thick) in zip(materials, thicknesses)
         z_cur += current_thick / 2.0
         append!(
             geometry,
-            [fdtd.Object(
-                Cuboid([0.0, 0.0, z_cur], [4.0, 4.0, current_thick]), current_mat)
-            ]
-            )
+            [
+                fdtd.Object(
+                    Cuboid([0.0, 0.0, z_cur], [4.0, 4.0, current_thick]),
+                    current_mat,
+                ),
+            ],
+        )
         z_cur += current_thick / 2.0
     end
 
     sim = fdtd.Simulation(
-        cell_size = [4.0,4.0,z_thickness],
-        cell_center = [0.0,0.0,0.0],
+        cell_size = [4.0, 4.0, z_thickness],
+        cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
         geometry = geometry,
         sources = sources,
-        boundaries = [[1.,1.],[1.,1.],[1.,1.]],
+        boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
     )
 
     return sim
@@ -101,11 +100,11 @@ end
                 tolerance,
                 profile_run,
                 benchmark,
-                )
+            )
         end
     end
 end
 
 if profile_run
-    YAML.write_file(YAML_FILENAME,profiling_results)
+    YAML.write_file(YAML_FILENAME, profiling_results)
 end

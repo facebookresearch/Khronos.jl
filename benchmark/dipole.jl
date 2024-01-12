@@ -24,12 +24,13 @@ backend, precision, profile_run = detect_and_set_backend()
 hardware_key = get_hardware_key()
 
 function build_dipole_simulation(resolution, sim_xyz)
-    sources = [fdtd.UniformSource(
-        time_profile = fdtd.ContinuousWaveSource(fcen=1.),
-        component = fdtd.Ez(),
-        center = [0., 0., 0.],
-        size = [0., 0., 0.]
-    )
+    sources = [
+        fdtd.UniformSource(
+            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
+            component = fdtd.Ez(),
+            center = [0.0, 0.0, 0.0],
+            size = [0.0, 0.0, 0.0],
+        ),
     ]
 
     sim = fdtd.Simulation(
@@ -37,7 +38,7 @@ function build_dipole_simulation(resolution, sim_xyz)
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
         sources = sources,
-        boundaries = [[1.,1.],[1.,1.],[1.,1.]],
+        boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
     )
 
     return sim
@@ -64,11 +65,11 @@ end
                 tolerance,
                 profile_run,
                 benchmark,
-                )
+            )
         end
     end
 end
 
 if profile_run
-    YAML.write_file(YAML_FILENAME,profiling_results)
+    YAML.write_file(YAML_FILENAME, profiling_results)
 end

@@ -5,17 +5,18 @@ using Test
 
 function build_sim()
     return fdtd.Simulation(
-        cell_size = [10.,10.,10.],
-        cell_center = [0.,0.,0.],
+        cell_size = [10.0, 10.0, 10.0],
+        cell_center = [0.0, 0.0, 0.0],
         resolution = 10,
         sources = [
             fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen=1.),
-            component = fdtd.Ez(),
-            center = [0.023, 0.784, 0.631],
-            size = [0., 0., 0.])
+                time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
+                component = fdtd.Ez(),
+                center = [0.023, 0.784, 0.631],
+                size = [0.0, 0.0, 0.0],
+            ),
         ],
-        boundaries = [[1.,1.],[1.,1.],[1.,1.]]
+        boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
     )
 end
 
@@ -68,4 +69,3 @@ end
 # ------------------------------------------------ #
 # Test sub kernels
 # ------------------------------------------------ #
-

@@ -14,13 +14,19 @@ get_direction_index(::Z) = 3
 
 For a given component, get the nnumber of grid voxels throughout the domain.
 """
-get_component_voxel_count(sim::SimulationData,::Union{Ex,Dx}) = [sim.Nx, sim.Ny + 1, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData,::Union{Ey,Dy}) = [sim.Nx + 1, sim.Ny, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData,::Union{Ez,Dz}) = [sim.Nx + 1, sim.Ny + 1, sim.Nz]
-get_component_voxel_count(sim::SimulationData,::Union{Hx,Bx}) = [sim.Nx + 1, sim.Ny, sim.Nz]
-get_component_voxel_count(sim::SimulationData,::Union{Hy,By}) = [sim.Nx, sim.Ny + 1, sim.Nz]
-get_component_voxel_count(sim::SimulationData,::Union{Hz,Bz}) = [sim.Nx, sim.Ny, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData,::Center) = [sim.Nx, sim.Ny, sim.Nz]
+get_component_voxel_count(sim::SimulationData, ::Union{Ex,Dx}) =
+    [sim.Nx, sim.Ny + 1, sim.Nz + 1]
+get_component_voxel_count(sim::SimulationData, ::Union{Ey,Dy}) =
+    [sim.Nx + 1, sim.Ny, sim.Nz + 1]
+get_component_voxel_count(sim::SimulationData, ::Union{Ez,Dz}) =
+    [sim.Nx + 1, sim.Ny + 1, sim.Nz]
+get_component_voxel_count(sim::SimulationData, ::Union{Hx,Bx}) =
+    [sim.Nx + 1, sim.Ny, sim.Nz]
+get_component_voxel_count(sim::SimulationData, ::Union{Hy,By}) =
+    [sim.Nx, sim.Ny + 1, sim.Nz]
+get_component_voxel_count(sim::SimulationData, ::Union{Hz,Bz}) =
+    [sim.Nx, sim.Ny, sim.Nz + 1]
+get_component_voxel_count(sim::SimulationData, ::Center) = [sim.Nx, sim.Ny, sim.Nz]
 
 """create_array_from_volume
 
@@ -45,26 +51,34 @@ function get_gridvolume_dims(gv::GridVolume)
     return [gv.Nx, gv.Ny, gv.Nz]
 end
 
-Base.IteratorsMD.CartesianIndices(gv::GridVolume) = CartesianIndices((1:gv.Nx,1:gv.Ny,1:gv.Nz))
+Base.IteratorsMD.CartesianIndices(gv::GridVolume) =
+    CartesianIndices((1:gv.Nx, 1:gv.Ny, 1:gv.Nz))
 
 function create_arrays_from_surface()
 
 end
 
-function point_from_grid_index(sim::SimulationData, gv::GridVolume, idx_point::Vector{<:Real})
+function point_from_grid_index(
+    sim::SimulationData,
+    gv::GridVolume,
+    idx_point::Vector{<:Real},
+)
     Δ = [sim.Δx, sim.Δy, sim.Δz]
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
     return origin .+ (gv_origin .+ idx_point - [1, 1, 1]) .* Δ
 end
 
-function point_from_grid_index(sim::SimulationData, gv::GridVolume, idx_point::CartesianIndex)
-    point_from_grid_index(sim,gv,[Tuple(idx_point)...])
+function point_from_grid_index(
+    sim::SimulationData,
+    gv::GridVolume,
+    idx_point::CartesianIndex,
+)
+    point_from_grid_index(sim, gv, [Tuple(idx_point)...])
 end
 
 function loop_over_grid_volume(gv::GridVolume)
-    pos = 
-    idx = Base.IteratorsMD.CartesianIndices(gv)
+    pos = idx = Base.IteratorsMD.CartesianIndices(gv)
     return (pos, idx)
 end
 
@@ -88,17 +102,22 @@ function GridVolume(sim::SimulationData, volume::Volume, component::Field)
     GridVolume(component, start_idx, end_idx, Nx, Ny, Nz)
 end
 
-function GridVolume(sim::SimulationData, center::Vector{Real}, size::Vector{Real}, component::Field)
-    GridVolume(sim, Volume(center=center,size=size), component)
+function GridVolume(
+    sim::SimulationData,
+    center::Vector{Real},
+    size::Vector{Real},
+    component::Field,
+)
+    GridVolume(sim, Volume(center = center, size = size), component)
 end
 
 function GridVolume(sim::SimulationData, component::Field)
-    GridVolume(sim, Volume(center=sim.cell_center,size=sim.cell_size), component)
+    GridVolume(sim, Volume(center = sim.cell_center, size = sim.cell_size), component)
 end
 
 function GridVolume(sim::SimulationData)
     # Create a grid volume spanning the simulation domain for voxel centers
-    GridVolume(sim, Volume(center=sim.cell_center,size=sim.cell_size), Center())
+    GridVolume(sim, Volume(center = sim.cell_center, size = sim.cell_size), Center())
 end
 
 """get_yee_shift(sim, component)
@@ -107,7 +126,7 @@ Return a displacement vector to go from a cell origin to that particular compone
 
 Make sure the simulation is prepared first...
 """
-get_yee_shift(sim::SimulationData, ::Center) = [0., 0., 0.]
+get_yee_shift(sim::SimulationData, ::Center) = [0.0, 0.0, 0.0]
 get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) = [0, -sim.Δy / 2, -sim.Δz / 2]
 get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) = [-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0]
 get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) = [-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0]
@@ -126,7 +145,7 @@ voxels are in the domain.
 """
 
 function get_component_origin(sim::SimulationData)
-    return -sim.cell_size / 2 .- sim.cell_center .+ [sim.Δx/2, sim.Δy/2, sim.Δz/2] 
+    return -sim.cell_size / 2 .- sim.cell_center .+ [sim.Δx / 2, sim.Δy / 2, sim.Δz / 2]
 end
 
 function get_component_origin(sim::SimulationData, component::Field)
@@ -140,20 +159,20 @@ Get the grid index of a point nearest a real location (no rounding)
 function get_grid_idx(sim::SimulationData, point::Vector{<:Real}, component::Field)
     Δ = [sim.Δx, sim.Δy, sim.Δz]
 
-    sim_vol = Volume(center=sim.cell_center,size=sim.cell_size)
+    sim_vol = Volume(center = sim.cell_center, size = sim.cell_size)
     corner_to_center = [sim.Δx, sim.Δy, sim.Δz] ./ 2
     min_corner = get_min_corner(sim_vol) + corner_to_center + get_yee_shift(sim, component)
     max_corner = get_max_corner(sim_vol) - corner_to_center - get_yee_shift(sim, component)
-    
-    point_trimmed = min.(point,max_corner)
-    point_trimmed = max.(point_trimmed,min_corner)
-    point_idx = (point_trimmed-min_corner) ./ Δ .+ 1 # add 1 due to 1-indexing
+
+    point_trimmed = min.(point, max_corner)
+    point_trimmed = max.(point_trimmed, min_corner)
+    point_idx = (point_trimmed - min_corner) ./ Δ .+ 1 # add 1 due to 1-indexing
 
     # This is simply a matter of convention. In the case of a 2D
     # simulation, then we result in ∞/∞. In reality, it doesn't matter
     # what we do here, so we'll just return a number that can be operated
     # on down the road, but will throw an error if indexed upon.
-    replace!(point_idx, NaN=>0)
+    replace!(point_idx, NaN => 0)
 
     return point_idx
 end
@@ -163,7 +182,7 @@ end
 Get the grid index of a point nearest a real location (rounding down)
 """
 function get_lower_grid_idx(sim::SimulationData, point::Vector{<:Real}, component::Field)
-    return Int.(floor.( get_grid_idx(sim, point, component)))
+    return Int.(floor.(get_grid_idx(sim, point, component)))
 end
 
 """get_upper_grid_idx()
@@ -171,7 +190,7 @@ end
 Get the grid index of a point nearest a real location (rounding up)
 """
 function get_upper_grid_idx(sim::SimulationData, point::Vector{<:Real}, component::Field)
-    return Int.(ceil.( get_grid_idx(sim, point, component)))
+    return Int.(ceil.(get_grid_idx(sim, point, component)))
 end
 
 """
@@ -182,12 +201,12 @@ From a `GridVolume` (`gv`) compute the point in continuous coordinates.
 function grid_volume_idx_to_point(sim::SimulationData, gv::GridVolume, idx_point)
     # FIXME
     if length(idx_point) < 3
-        idx_point = CartesianIndex(idx_point,(0))
+        idx_point = CartesianIndex(idx_point, (0))
     end
     idx_point = collect(Tuple(idx_point))
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
-    
+
     # FIXME
     # Our current convention, combined with Julia's 1-based indexing, means
     # we need to compensate by `2`, not just `1` like we ould expect. We should
@@ -279,7 +298,7 @@ function get_plane_transverse_fields(vol::Volume)
     if get_volume_dimensionality(vol) != 2
         error("The specified volume is not a plane (size=$(vol.size))")
     end
-    
+
     normal_dir = plane_normal_direction(vol)
 
     transverse_field_mapping = Dict(
@@ -292,7 +311,7 @@ function get_plane_transverse_fields(vol::Volume)
 end
 
 function normalize_vector(vec::Vector{<:Number})
-    return vec / sum(abs.(vec).^2).^2
+    return vec / sum(abs.(vec) .^ 2) .^ 2
 end
 
 """
@@ -315,17 +334,24 @@ This will get tricky when we have nonuninform gridding. We'll have to think of a
 new way to perform the interpolation and restriction, and how to efficiently
 pull weights.
 """
-function compute_interpolation_weight(point::Vector{<:Real}, volume::Volume,
-    ndims::Int, Δx::Union{Real,Nothing}, Δy::Union{Real,Nothing}, Δz::Union{Real,Nothing})
+function compute_interpolation_weight(
+    point::Vector{<:Real},
+    volume::Volume,
+    ndims::Int,
+    Δx::Union{Real,Nothing},
+    Δy::Union{Real,Nothing},
+    Δz::Union{Real,Nothing},
+)
     Δ = [Δx, Δy, Δz]
     weight = 1
     max_corner = get_max_corner(volume)
     min_corner = get_min_corner(volume)
 
     # The problem is separable by dimension
-    for dim in 1:ndims
+    for dim = 1:ndims
 
-        if (point[dim] <= (min_corner[dim] - Δ[dim])) || (point[dim] >= (max_corner[dim] + Δ[dim]))
+        if (point[dim] <= (min_corner[dim] - Δ[dim])) ||
+           (point[dim] >= (max_corner[dim] + Δ[dim]))
             # If we are further than a pixel away from the boundary, then no weighting
             weight = 0
         else
@@ -339,9 +365,9 @@ function compute_interpolation_weight(point::Vector{<:Real}, volume::Volume,
                 if (point[dim] >= min_corner[dim]) && (point[dim] <= max_corner[dim])
                     # the point is _inside_ the subpixel volume.
                     # subtract two quadratics, one for each side.
-                    weight *= 1 -
-                              0.5 * (1.0 - (point[dim] - min_corner[dim]) / Δ[dim])^2 -
-                              0.5 * (1.0 - (max_corner[dim] - point[dim]) / Δ[dim])^2
+                    weight *=
+                        1 - 0.5 * (1.0 - (point[dim] - min_corner[dim]) / Δ[dim])^2 -
+                        0.5 * (1.0 - (max_corner[dim] - point[dim]) / Δ[dim])^2
                 elseif (point[dim] <= min_corner[dim]) &&
                        (abs(point[dim] - min_corner[dim]) < Δ[dim])
                     # current point is left of left corner...
@@ -351,15 +377,17 @@ function compute_interpolation_weight(point::Vector{<:Real}, volume::Volume,
                         # one quadratic subtracted from another
                         # the first quadratic should increase as the distance between left point and left corner decreases
                         # the second quadratic should increase as the distance between left point and right corner increases
-                        weight *= 0.5 * (1.0 - (min_corner[dim] - point[dim]) / Δ[dim])^2 -
-                                  0.5 * (1.0 - (max_corner[dim] - point[dim]) / Δ[dim])^2
+                        weight *=
+                            0.5 * (1.0 - (min_corner[dim] - point[dim]) / Δ[dim])^2 -
+                            0.5 * (1.0 - (max_corner[dim] - point[dim]) / Δ[dim])^2
 
                     else
                         # ...and the next point is to the left of the volume corner (inside it)
                         # range should be 0 to 0.5
                         weight *= 0.5 * (1.0 - (min_corner[dim] - point[dim]) / Δ[dim])^2
                     end
-                elseif (point[dim] >= max_corner[dim]) && (abs(point[dim] - max_corner[dim]) < Δ[dim])
+                elseif (point[dim] >= max_corner[dim]) &&
+                       (abs(point[dim] - max_corner[dim]) < Δ[dim])
                     # point is right of right corner...
                     if (min_corner[dim] > (point[dim] - Δ[dim]))
                         # ... and the point before is before the left corner
@@ -367,8 +395,9 @@ function compute_interpolation_weight(point::Vector{<:Real}, volume::Volume,
                         # one quadratic subtracted from another
                         # the first quadratic should increase as the distance between right point and right corner decreases
                         # the second quadratic should increase as the distance between right point and left corner increases
-                        weight *= 0.5 * (1.0 - (point[dim] - max_corner[dim]) / Δ[dim])^2 -
-                                  0.5 * (1.0 - (point[dim] - min_corner[dim]) / Δ[dim])^2
+                        weight *=
+                            0.5 * (1.0 - (point[dim] - max_corner[dim]) / Δ[dim])^2 -
+                            0.5 * (1.0 - (point[dim] - min_corner[dim]) / Δ[dim])^2
                     else
                         # ... and the point before is after the left corner
                         # (e.g. inside the volume)
@@ -378,19 +407,23 @@ function compute_interpolation_weight(point::Vector{<:Real}, volume::Volume,
                 end
             else
                 # region spans beyond one pixel, four cases
-                if (point[dim] < min_corner[dim]) && (abs(point[dim] - min_corner[dim]) < Δ[dim])
+                if (point[dim] < min_corner[dim]) &&
+                   (abs(point[dim] - min_corner[dim]) < Δ[dim])
                     # point left of left corner, but within 1 pixel radius
                     # range is quadratic from 0 to 0.5
                     weight *= 0.5 * (1.0 - (min_corner[dim] - point[dim]) / Δ[dim])^2
-                elseif (point[dim] >= min_corner[dim]) && (abs(point[dim] - min_corner[dim]) < Δ[dim])
+                elseif (point[dim] >= min_corner[dim]) &&
+                       (abs(point[dim] - min_corner[dim]) < Δ[dim])
                     # point right of left corner, but within 1 pixel radius
                     # range is quadratic from 0.5 to 1
                     weight *= 1 - 0.5 * (1.0 - (point[dim] - min_corner[dim]) / Δ[dim])^2
-                elseif (point[dim] <= max_corner[dim]) && (abs(point[dim] - max_corner[dim]) < Δ[dim])
+                elseif (point[dim] <= max_corner[dim]) &&
+                       (abs(point[dim] - max_corner[dim]) < Δ[dim])
                     # point left of right corner, but within 1 pixel radius
                     # range is quadratic from 0.5 to 1
                     weight *= 1 - 0.5 * (1.0 - (max_corner[dim] - point[dim]) / Δ[dim])^2
-                elseif (point[dim] > max_corner[dim]) && (abs(point[dim] - max_corner[dim]) < Δ[dim])
+                elseif (point[dim] > max_corner[dim]) &&
+                       (abs(point[dim] - max_corner[dim]) < Δ[dim])
                     # point right of right corner, but within 1 pixel radius
                     # range is quadratic from 0 to 0.5
                     weight *= 0.5 * (1.0 - (point[dim] - max_corner[dim]) / Δ[dim])^2
@@ -419,7 +452,9 @@ Computes the DTFT for a signal `x` at frequencies `f` using `t` as a time sequen
 """
 function DTFT(t, x, f)
     if length(t) != length(x)
-        error("The time (t) and signal (x) vectors must be the same length (lengths $(length(t)) and $(length(f)))")
+        error(
+            "The time (t) and signal (x) vectors must be the same length (lengths $(length(t)) and $(length(f)))",
+        )
     end
 
     N = length(t)
@@ -427,7 +462,7 @@ function DTFT(t, x, f)
     X = zeros(ComplexF64, Nf)
     Δt = t[2] - t[1]
 
-    for n in 1:Nf
+    for n = 1:Nf
         X[n] = sum(Δt / sqrt(2.0 * π) * exp.(-im * 2 * π * f[n] * t) .* x)
     end
 
@@ -445,7 +480,7 @@ TBW
 """
 function get_neighbors(x::AbstractArray, point::Float64)
     # get closest point
-    closest_idx = argmin(abs.(x-point))
+    closest_idx = argmin(abs.(x - point))
     # determine which side and get the other point
     if (x[closest_idx] == point) || (closest_idx) == 1 || (closest_idx == length(x))
         left_idx = right_idx = closest_idx
@@ -465,13 +500,13 @@ end
 
 TBW
 """
-function linear_interpolator(x::AbstractArray, y::AbstractArray, point::Float64)    
+function linear_interpolator(x::AbstractArray, y::AbstractArray, point::Float64)
     left_idx, right_idx = get_neighbors(x, point)
-    
+
     if left_idx == right_idx
         return y[left_idx]
     end
-    
+
     Δx = x[right_idx] - x[left_idx]
     left_weight = (point - x[left_idx]) / Δx
     right_weight = (x[right_idx] - point) / Δx
@@ -484,20 +519,25 @@ end
 
 TBW
 """
-function bilinear_interpolator(x1::AbstractArray, x2::AbstractArray, y::AbstractArray, point::AbstractArray)
+function bilinear_interpolator(
+    x1::AbstractArray,
+    x2::AbstractArray,
+    y::AbstractArray,
+    point::AbstractArray,
+)
     bottom_idx, top_idx = get_neighbors(x2, point[2])
-    
+
     # linearly interpolate top x1
-    top_val = linear_interpolator(x1, y[:,top_idx], point[1])
+    top_val = linear_interpolator(x1, y[:, top_idx], point[1])
 
     # linearly interpolate bottom x1
-    bottom_val = linear_interpolator(x1, y[:,bottom_idx], point[1])
+    bottom_val = linear_interpolator(x1, y[:, bottom_idx], point[1])
 
     # manually linearly interpolate x2
     Δy = x2[top_idx] - x2[bottom_idx]
     bottom_weight = (point[2] - x2[bottom_idx]) / Δy
     top_weight = (x2[top_idx] - point[2]) / Δy
-    
+
     return bottom_weight * bottom_val + top_weight * top_val
 end
 
@@ -506,20 +546,26 @@ end
 
 TBW
 """
-function trilinear_interpolator(x1::AbstractArray, x2::AbstractArray, x3::AbstractArray, y::AbstractArray, point::AbstractArray)
+function trilinear_interpolator(
+    x1::AbstractArray,
+    x2::AbstractArray,
+    x3::AbstractArray,
+    y::AbstractArray,
+    point::AbstractArray,
+)
     bottom_idx, top_idx = get_neighbors(x3, point[3])
-    
+
     # bilinearly interpolate top (x1,x2)
-    top_val = bilinear_interpolator(x1, x2, y[:,:,top_idx], point[1:2])
+    top_val = bilinear_interpolator(x1, x2, y[:, :, top_idx], point[1:2])
 
     # bilinearly interpolate bottom (x1,x2)
-    bottom_val = bilinear_interpolator(x1, x2, y[:,:,bottom_idx], point[1:2])
+    bottom_val = bilinear_interpolator(x1, x2, y[:, :, bottom_idx], point[1:2])
 
     # manually linearly interpolate x3
     Δz = x3[top_idx] - x3[bottom_idx]
     bottom_weight = (point[3] - x3[bottom_idx]) / Δz
     top_weight = (x3[top_idx] - point[3]) / Δz
-    
+
     return bottom_weight * bottom_val + top_weight * top_val
 end
 
@@ -529,7 +575,7 @@ end
 TBW
 """
 function gen_interpolator_from_array(data::AbstractArray, vol::Volume)
-    
+
     # make sure array is 3D
     if ndims(data) != 3
         error("The supplied data array must be 3D (supplied $(ndims(data)) dimensions).")
@@ -537,7 +583,13 @@ function gen_interpolator_from_array(data::AbstractArray, vol::Volume)
 
     # pull the grid from the array
     ranges = [
-        collect(range(vol.center[k] - vol.size[k]/2, vol.center[k] + vol.size[k]/2, length=size(data)[k])) for k in 1:3
+        collect(
+            range(
+                vol.center[k] - vol.size[k] / 2,
+                vol.center[k] + vol.size[k] / 2,
+                length = size(data)[k],
+            ),
+        ) for k = 1:3
     ]
 
     function interpolator(point)
