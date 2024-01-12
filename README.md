@@ -1,20 +1,10 @@
-# fdtd.jl
-An internal, high-performing fdtd library using Julia.
+# Khronos.jl
 
-To use, start a julia REPL session:
+![Continuous integration](https://github.com/facebookresearch/Khronos.jl/actions/workflows/ci.yml/badge.svg)
 
-```bash
-$> julia
-```
+A GPU-accelerated, differentiable, Maxwell FDTD solver using Julia.
 
-Enter the package manager by typing `]`:
+## Key Features
 
-```julia
-julia> ]
-```
-
-Add the current directory to the package manager:
-
-```
-(@v1.8) pkg> add {PATH_TO}/fdtd.jl
-```
+- GPU acceleration via NVIDIA CUDA, AMD ROCm, Intel OneAPI, and Apple Metal.
+- Perfectly matched layer (PML) absorbing boundaries
