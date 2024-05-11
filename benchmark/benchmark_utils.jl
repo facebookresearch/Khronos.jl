@@ -2,7 +2,7 @@
 
 module BenchmarkUtils
 
-import fdtd
+import Khronos
 
 using CUDA
 using ArgParse
@@ -15,9 +15,9 @@ export detect_and_set_backend, get_hardware_key, benchmark_result
 UPDATE_FACTOR = 2.0
 
 backend_string_to_struct = Dict([
-    ("CUDA", fdtd.CUDADevice()),
-    ("Metal", fdtd.MetalDevice()),
-    ("CPU", fdtd.CPUDevice()),
+    ("CUDA", Khronos.CUDADevice()),
+    ("Metal", Khronos.MetalDevice()),
+    ("CPU", Khronos.CPUDevice()),
 ])
 
 precision_string_to_type = Dict([("Float32", Float32), ("Float64", Float64)])
@@ -65,7 +65,7 @@ function detect_and_set_backend(backend::String, precision::String)
 
     backend_struct = backend_string_to_struct[backend]
     precision_type = precision_string_to_type[precision]
-    fdtd.choose_backend(backend_struct, precision_type)
+    Khronos.choose_backend(backend_struct, precision_type)
 
     return backend, precision
 end
@@ -100,11 +100,11 @@ end
 
 function detect_and_set_backend(backend::Nothing, precision::Nothing)
 
-    if fdtd.CUDA.functional()
+    if Khronos.CUDA.functional()
         # Check for CUDA
         default_backend = "CUDA"
         default_precision = "Float64"
-    elseif fdtd.Metal.functional()
+    elseif Khronos.Metal.functional()
         # Check for Metal
         default_backend = "Metal"
         default_precision = "Float32"

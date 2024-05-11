@@ -1,7 +1,7 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #
 import YAML
-import fdtd
+import Khronos
 
 using KernelAbstractions
 using Logging
@@ -31,29 +31,29 @@ function build_sphere_sim(resolution, radius; include_loss = false)
     src_z = -s_xyz / 2.0 + 1.0
     #TODO swap out for actual planewave source once ready
     sources = [
-        fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-            component = fdtd.Ex(),
+        Khronos.UniformSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+            component = Khronos.Ex(),
             center = [0.0, 0.0, src_z],
             size = [Inf, Inf, 0.0],
         ),
-        fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-            component = fdtd.Hy(),
+        Khronos.UniformSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+            component = Khronos.Hy(),
             center = [0.0, 0.0, src_z],
             size = [Inf, Inf, 0.0],
         ),
     ]
 
     if include_loss
-        mat = fdtd.Material(ε = 3, σD = 5)
+        mat = Khronos.Material(ε = 3, σD = 5)
     else
-        mat = fdtd.Material(ε = 3)
+        mat = Khronos.Material(ε = 3)
     end
 
-    geometry = [fdtd.Object(Ball([0.0, 0.0, 0.0], radius), mat)]
+    geometry = [Khronos.Object(Ball([0.0, 0.0, 0.0], radius), mat)]
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = [s_xyz, s_xyz, s_xyz],
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -79,7 +79,7 @@ end
         @testset "resolution: $resolution | radius: $radius" begin
 
             sim = build_sphere_sim(resolution, radius)
-            timstep_rate = fdtd.run_benchmark(sim, 110)
+            timstep_rate = Khronos.run_benchmark(sim, 110)
             benchmark_result(
                 timstep_rate,
                 benchmark_rate,
