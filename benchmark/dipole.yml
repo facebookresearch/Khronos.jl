@@ -1,4 +1,39 @@
 simple_dipole:
+  NVIDIA A100-SXM4-80GB:
+    CUDA:
+      Float64:
+        - timestep_rate: 1171.2865695086832
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 9404.763282823858
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 74542.75690545407
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 609755.7829281278
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 18532.62636974196
+          resolution: 10.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 152326.27564917377
+          resolution: 20.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 1.1860356824106395e6
+          resolution: 40.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 1.4693758582999355e6
+          resolution: 50.0
+          size_xyz: 10.0
+          tolerance: 1.1
   NVIDIA H100:
     CUDA:
       Float64:

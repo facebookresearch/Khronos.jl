@@ -1,7 +1,7 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #
 import YAML
-import fdtd
+import Khronos
 
 using KernelAbstractions
 using Logging
@@ -30,23 +30,23 @@ function build_periodic_stack(resolution::Real, z_scaling::Real)
     #TODO swap out for actual planewave source once ready
     src_z = (-z_thickness / 2.0) + 1.0
     sources = [
-        fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-            component = fdtd.Ex(),
+        Khronos.UniformSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+            component = Khronos.Ex(),
             center = [0.0, 0.0, src_z],
             size = [Inf, Inf, 0.0],
         ),
-        fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-            component = fdtd.Hy(),
+        Khronos.UniformSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+            component = Khronos.Hy(),
             center = [0.0, 0.0, src_z],
             size = [Inf, Inf, 0.0],
         ),
     ]
 
-    mat_low = fdtd.Material(ε = 1.5)
-    mat_mid = fdtd.Material(ε = 2.5)
-    mat_high = fdtd.Material(ε = 3.5)
+    mat_low = Khronos.Material(ε = 1.5)
+    mat_mid = Khronos.Material(ε = 2.5)
+    mat_high = Khronos.Material(ε = 3.5)
 
     materials = [mat_low, mat_mid, mat_low, mat_high, mat_mid, mat_high]
     thicknesses = [0.5, 1.0, 0.75, 1.0, 0.25, 0.5] * z_scaling
@@ -58,7 +58,7 @@ function build_periodic_stack(resolution::Real, z_scaling::Real)
         append!(
             geometry,
             [
-                fdtd.Object(
+                Khronos.Object(
                     Cuboid([0.0, 0.0, z_cur], [4.0, 4.0, current_thick]),
                     current_mat,
                 ),
@@ -67,7 +67,7 @@ function build_periodic_stack(resolution::Real, z_scaling::Real)
         z_cur += current_thick / 2.0
     end
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = [4.0, 4.0, z_thickness],
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -93,7 +93,7 @@ end
         @testset "resolution: $resolution | z_scaling: $z_scaling" begin
 
             sim = build_periodic_stack(resolution, z_scaling)
-            timstep_rate = fdtd.run_benchmark(sim, 110)
+            timstep_rate = Khronos.run_benchmark(sim, 110)
             benchmark_result(
                 timstep_rate,
                 benchmark_rate,

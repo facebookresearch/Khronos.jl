@@ -1,4 +1,27 @@
 dielectric_periodic_stack:
+  NVIDIA A100-SXM4-80GB:
+    CUDA:
+      Float64:
+        - timestep_rate: 1209.9099268020047
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 9692.560245531686
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+        - timestep_rate: 80896.69434189708
+          z_scaling: 0.5
+          resolution: 40.0
+          tolerance: 1.1
+        - timestep_rate: 2550.213338400152
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 18446.00281738533
+          z_scaling: 1.0
+          resolution: 20.0
+          tolerance: 1.1
   NVIDIA H100:
     CUDA:
       Float64:

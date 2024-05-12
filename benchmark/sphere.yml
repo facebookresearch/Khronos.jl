@@ -1,4 +1,23 @@
 scattering_off_sphere:
+  NVIDIA A100-SXM4-80GB:
+    CUDA:
+      Float64:
+        - timestep_rate: 1961.7151837162314
+          resolution: 10.0
+          radius: 1.0
+          tolerance: 1.1
+        - timestep_rate: 15772.803850782191
+          resolution: 20.0
+          radius: 1.0
+          tolerance: 1.1
+        - timestep_rate: 5458.308123079258
+          resolution: 10.0
+          radius: 2.0
+          tolerance: 1.1
+        - timestep_rate: 43314.779933009675
+          resolution: 20.0
+          radius: 2.0
+          tolerance: 1.1
   NVIDIA H100:
     CUDA:
       Float64:
@@ -16,20 +35,6 @@ scattering_off_sphere:
           tolerance: 1.1
         - timestep_rate: 29747.91329835354
           resolution: 20.0
-          radius: 2.0
-          tolerance: 1.1
-    CPU:
-      Float64:
-        - timestep_rate: 5.024192476494856
-          resolution: 10.0
-          radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 7.351783347815566
-          resolution: 20.0
-          radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 6.170264450761192
-          resolution: 10.0
           radius: 2.0
           tolerance: 1.1
   Apple M1 Pro:

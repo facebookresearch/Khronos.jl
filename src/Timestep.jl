@@ -98,7 +98,9 @@ function step_B_from_E!(sim::SimulationData)
         ndrange = ndrange,
     )
 
-    #      # TODO update halo
+
+    # TODO update halo
+    return
 end
 
 function update_H_from_B!(sim::SimulationData)
@@ -130,7 +132,9 @@ function update_H_from_B!(sim::SimulationData)
         ndrange = ndrange,
     )
 
+
     # TODO update halo
+    return
 end
 
 function step_D_from_H!(sim::SimulationData)
@@ -164,7 +168,9 @@ function step_D_from_H!(sim::SimulationData)
         ndrange = ndrange,
     )
 
+
     # TODO update halo
+    return
 end
 
 function update_E_from_D!(sim::SimulationData)
@@ -195,6 +201,8 @@ function update_E_from_D!(sim::SimulationData)
         sim.boundary_data.σBz,
         ndrange = ndrange,
     )
+
+
     # TODO update halo
     return
 end
@@ -254,14 +262,17 @@ end
 function update_magnetic_sources!(sim::SimulationData, t::Real)
     # table-stable iterator
     map((c) -> step_sources!(sim, c, t), (Hx(), Hy(), Hz()))
-    return
+
+
     # TODO update halo
+    return
 end
 
 function update_electric_sources!(sim::SimulationData, t::Real)
     map((c) -> step_sources!(sim, c, t), (Ex(), Ey(), Ez()))
-    return
+
     # TODO update halo
+    return
 end
 
 function update_H_monitors!(sim::SimulationData, time)
@@ -270,6 +281,8 @@ function update_H_monitors!(sim::SimulationData, time)
             update_monitor(sim, m, time)
         end
     end
+
+    # TODO update halo
     return
 end
 
@@ -279,6 +292,8 @@ function update_E_monitors!(sim::SimulationData, time)
             update_monitor(sim, m, time)
         end
     end
+
+    # TODO update halo
     return
 end
 

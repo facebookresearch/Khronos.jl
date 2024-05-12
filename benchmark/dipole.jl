@@ -1,7 +1,7 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #
 import YAML
-import fdtd
+import Khronos
 
 using KernelAbstractions
 using Logging
@@ -25,15 +25,15 @@ hardware_key = get_hardware_key()
 
 function build_dipole_simulation(resolution, sim_xyz)
     sources = [
-        fdtd.UniformSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-            component = fdtd.Ez(),
+        Khronos.UniformSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+            component = Khronos.Ez(),
             center = [0.0, 0.0, 0.0],
             size = [0.0, 0.0, 0.0],
         ),
     ]
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = sim_xyz * [1.0, 1.0, 1.0],
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -58,7 +58,7 @@ end
         @testset "resolution: $resolution | size_xyz: $size_xyz" begin
 
             sim = build_dipole_simulation(resolution, size_xyz)
-            timstep_rate = fdtd.run_benchmark(sim, 110)
+            timstep_rate = Khronos.run_benchmark(sim, 110)
             benchmark_result(
                 timstep_rate,
                 benchmark_rate,
