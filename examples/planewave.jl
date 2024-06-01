@@ -1,10 +1,12 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+#
+# Simulate the propagation of a planewave in a homogeonous medium.
 
-import fdtd
+import Khronos
 using CairoMakie
 using GeometryPrimitives
 
-fdtd.choose_backend(fdtd.CPUDevice(), Float64)
+Khronos.choose_backend(Khronos.CUDADevice(), Float64)
 
 """
     build_simulation(λ, resolution)
@@ -23,16 +25,17 @@ function build_simulation(λ, resolution)
     boundary_layers = [[dpml, dpml], [dpml, dpml], [dpml, dpml]]
 
     sources = [
-        fdtd.PlaneWaveSource(
-            time_profile = fdtd.ContinuousWaveSource(fcen = 1 / λ),
+        Khronos.PlaneWaveSource(
+            time_profile = Khronos.ContinuousWaveSource(fcen = 1.0 / λ),
             center = [0, 0, 0],
             size = [Inf, Inf, 0],
             k_vector = [0.0, 0.0, 1.0],
             polarization_angle = 0.0,
+            amplitude = 1im,
         ),
     ]
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = cell_size,
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -44,13 +47,14 @@ function build_simulation(λ, resolution)
 end
 
 λ = 1.0
-resolution = 20.0
+resolution = 40.0
 
 sim = build_simulation(λ, resolution)
-fdtd.run(sim, until = 60)
-scene = fdtd.plot2D(
+Khronos.run(sim, until = 60)
+scene = Khronos.plot2D(
     sim,
-    fdtd.Ex(),
-    fdtd.Volume([0.0, 0.0, 0.0], [2.0, 2.0, 4.0]),
+    Khronos.Ex(),
+    Khronos.Volume([0.0, 0.0, 0.0], [2.0, 2.0, 4.0]),
     plot_geometry = false,
 )
+save("planewave.png", scene)

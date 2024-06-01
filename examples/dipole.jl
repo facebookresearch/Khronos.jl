@@ -1,27 +1,42 @@
-import fdtd
+# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+#
+# Simulate a dipole in vacuum.
+
+import Khronos
 using CairoMakie
 
-fdtd.choose_backend(fdtd.CPUDevice(), Float32)
+Khronos.choose_backend(Khronos.CUDADevice(), Float64)
 
+# Place a z-polarized dipole with a wavelength 1μm at the center
 sources = [
-    fdtd.UniformSource(
-        time_profile = fdtd.ContinuousWaveSource(fcen = 1.0),
-        component = fdtd.Ez(),
+    Khronos.UniformSource(
+        time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+        component = Khronos.Ex(),
         center = [0.0, 0.0, 0.0],
         size = [0.0, 0.0, 0.0],
+        # we add a pi phase shift to force a sine wave, rather than a cosine.
+        amplitude = 1im,
     ),
 ]
 
-sim = fdtd.Simulation(
-    cell_size = [10.0, 10.0, 10.0],
+# Build the simulation object, such that it spans a cube 10μm×10μm×10μm. Place PML 1μm thick.
+sim = Khronos.Simulation(
+    cell_size = [4.0, 4.0, 4.0],
     cell_center = [0.0, 0.0, 0.0],
-    resolution = 20,
+    resolution = 40,
     sources = sources,
     boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
 )
 
-t_end = 10.0;
-fdtd.run(sim, until = t_end)
+# Run the simulation for 10 "time units"
+t_end = 40.0;
+Khronos.run(sim, until = t_end)
 
-scene = fdtd.plot2D(sim, fdtd.Ez(), fdtd.Volume([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]))
+# Plot cross sections of the result
+scene = Khronos.plot2D(
+    sim,
+    Khronos.Ex(),
+    Khronos.Volume([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
+    symmetric_field_scaling = false,
+)
 save("dipole.png", scene)
