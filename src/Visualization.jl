@@ -39,11 +39,23 @@ function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
     return (XY_slice, XZ_slice, YZ_slice)
 end
 
+"""
+    plot2D(
+    sim::SimulationData,
+    component::Field,
+    vol::Volume;
+    plot_geometry::Bool = false,
+    symmetric_field_scaling::Bool = true,
+)
+
+TBW
+"""
 function plot2D(
     sim::SimulationData,
     component::Field,
     vol::Volume;
-    plot_geometry::Bool = true,
+    plot_geometry::Bool = false,
+    symmetric_field_scaling::Bool = true,
 )
     prepare_simulation!(sim)
 
@@ -72,39 +84,31 @@ function plot2D(
     # end
     # bluesreds
 
-    f = Figure()
+    field_args = Dict()
+    field_args[:transparency] = true
+    field_args[:colormap] = :bluesreds
+    if symmetric_field_scaling
+        field_args[:colorrange] = (vmin, vmax)
+    end
+
+    f = Figure(size = (1200, 100))
+
     ax_xy = Axis(f[1, 1], title = "XY", xlabel = "X", ylabel = "Y", aspect = DataAspect())
     if plot_geometry
         heatmap!(ax_xy, eps_XY_slice, colormap = :binary, colorrange = (eps_vmin, eps_vmax))
     end
     xs = range(-vol_size[1] / 2, vol_size[1] / 2, length = size(XY_slice)[1])
     ys = range(-vol_size[2] / 2, vol_size[2] / 2, length = size(XY_slice)[2])
-    hm = heatmap!(
-        ax_xy,
-        xs,
-        ys,
-        XY_slice,
-        transparency = true,
-        colormap = :bluesreds,
-        colorrange = (vmin, vmax),
-    )
+    hm = heatmap!(ax_xy, xs, ys, XY_slice; field_args...)
     Colorbar(f[:, 2], hm)
-    # FIXME wrong aspect ratio
+
     ax_xz = Axis(f[1, 3], title = "XZ", xlabel = "X", ylabel = "Z", aspect = DataAspect())
     if plot_geometry
         heatmap!(ax_xz, eps_XZ_slice, colormap = :binary, colorrange = (eps_vmin, eps_vmax))
     end
     xs = range(-vol_size[1] / 2, vol_size[1] / 2, length = size(XZ_slice)[1])
     zs = range(-vol_size[3] / 2, vol_size[3] / 2, length = size(XZ_slice)[2])
-    hm = heatmap!(
-        ax_xz,
-        xs,
-        zs,
-        XZ_slice,
-        transparency = true,
-        colormap = :bluesreds,
-        colorrange = (vmin, vmax),
-    )
+    hm = heatmap!(ax_xz, xs, zs, XZ_slice; field_args...)
     Colorbar(f[:, 4], hm)
 
     ax_yz = Axis(f[1, 5], title = "YZ", xlabel = "Y", ylabel = "Z", aspect = DataAspect())
@@ -113,15 +117,7 @@ function plot2D(
     end
     ys = range(-vol_size[2] / 2, vol_size[2] / 2, length = size(YZ_slice)[1])
     zs = range(-vol_size[3] / 2, vol_size[3] / 2, length = size(YZ_slice)[2])
-    hm = heatmap!(
-        ax_yz,
-        ys,
-        zs,
-        YZ_slice,
-        transparency = true,
-        colormap = :bluesreds,
-        colorrange = (vmin, vmax),
-    )
+    hm = heatmap!(ax_yz, ys, zs, YZ_slice; field_args...)
     Colorbar(f[:, end+1], hm)
     return f
 end

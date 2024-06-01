@@ -1,15 +1,18 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+#
+# Using DFT monitors, compute the transmission of a planewave in 3D through a
+# simple slab structure. Compare the computed response to the analytic response.
 
-import fdtd
+import Khronos
 using CairoMakie
 using GeometryPrimitives
 
-fdtd.choose_backend(fdtd.CPUDevice(), Float64)
+Khronos.choose_backend(Khronos.CUDADevice(), Float64)
 
 """
     slab_analytical()
 
-Computes transmision as a function of slab thickness (d), refractive index (n), and wavelength (λ).
+Computes the analytic transmision as a function of slab thickness (d), refractive index (n), and wavelength (λ).
 """
 function slab_analytical(d, n, λ)
     rho = (n - 1) ./ (n + 1)
@@ -38,11 +41,11 @@ function build_simulation(d, n, λ, resolution; plot_geometry = false)
     boundary_layers = [[dpml, dpml], [dpml, dpml], [dpml, dpml]]
 
     sources = [
-        fdtd.PlaneWaveSource(
-            time_profile = fdtd.GaussianPulseSource(fcen = 1 / 1.5, fwidth = 0.4),
+        Khronos.PlaneWaveSource(
+            time_profile = Khronos.GaussianPulseSource(fcen = 1 / 1.5, fwidth = 0.4),
             center = [0, 0, -monitor_height],
             size = [Inf, Inf, 0.0],
-            polarization = [1.0, 0.0, 0.0],
+            polarization_angle = 0.0,
             k_vector = [0.0, 0.0, 1.0],
         ),
     ]
@@ -50,19 +53,20 @@ function build_simulation(d, n, λ, resolution; plot_geometry = false)
     geometry = []
 
     if plot_geometry
-        geometry = [fdtd.Object(Cuboid([0, 0, 0], [sxy, sxy, d]), fdtd.Material(ε = n^2))]
+        geometry =
+            [Khronos.Object(Cuboid([0, 0, 0], [sxy, sxy, d]), Khronos.Material(ε = n^2))]
     end
 
     monitors = [
-        fdtd.DFTMonitor(
-            component = fdtd.Ex(),
+        Khronos.DFTMonitor(
+            component = Khronos.Ex(),
             center = [0, 0, monitor_height],
             size = [monitor_xy, monitor_xy, 0],
             frequencies = 1 ./ λ,
         ),
     ]
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = cell_size,
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -76,10 +80,15 @@ function build_simulation(d, n, λ, resolution; plot_geometry = false)
 
 end
 
-function run_simulation!(sim::fdtd.SimulationData)
-    fdtd.run(
+"""
+    run_simulation!(sim::Khronos.SimulationData)
+
+Run a simulation (`sim`) until the DFT fields have converged.
+"""
+function run_simulation!(sim::Khronos.SimulationData)
+    Khronos.run(
         sim,
-        until_after_sources = fdtd.stop_when_dft_decayed(
+        until_after_sources = Khronos.stop_when_dft_decayed(
             tolerance = 1e-11,
             minimum_runtime = 0.0,
             maximum_runtime = 300.0,
@@ -87,35 +96,48 @@ function run_simulation!(sim::fdtd.SimulationData)
     )
 end
 
-function compute_power(sim::fdtd.SimulationData)
+"""
+    compute_power(sim::Khronos.SimulationData)
+
+Computes the total power of the first DFT monitor in the simulation (`sim`).
+"""
+function compute_power(sim::Khronos.SimulationData)
     return sum(abs.(sim.monitors[1].monitor_data.fields) .^ 2, dims = [1, 2])[1, 1, 1, :]
 end
 
 function main()
+    # Arbitrary simulation parameters that produce at least two maxima
     d = 0.5
     n = 3.5
     λ = range(1.0, 2.0, length = 100)
-    T = slab_analytical(d, n, λ)
+    resolution = 50
 
-    resolution = 20
     sim = build_simulation(d, n, λ, resolution; plot_geometry = false)
 
+    # Run a normalization simulation
     run_simulation!(sim)
 
+    # Compute the total power to normalize the actual simulation
     baseline = compute_power(sim)
 
+    # Run the actual simulation
     sim = build_simulation(d, n, λ, resolution; plot_geometry = true)
-
     run_simulation!(sim)
-
     slab = compute_power(sim)
 
-    T_fdtd = slab ./ baseline
+    # Normalize the transmission response
+    T_Khronos = slab ./ baseline
 
+    # Compute the analytic response for comparison
+    T = slab_analytical(d, n, λ)
+
+    # Plot the comparison
     f = Figure()
-    ax = Axis(f[1, 1])
-    scatterlines!(ax, λ, T)
-    scatterlines!(ax, λ, T_fdtd)
-    display(f)
-    return sim
+    ax = Axis(f[1, 1], xlabel = "λ (μm)", ylabel = "T (a.u.)")
+    line1 = scatterlines!(ax, λ, Array(T))
+    line2 = scatterlines!(ax, λ, Array(T_Khronos))
+    legend = Legend(f[1, 2], [line1, line2], ["Analytic", "Khronos"])
+    save("periodic_slab.png", f)
 end
+
+main()

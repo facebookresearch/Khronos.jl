@@ -196,9 +196,9 @@ function update_E_from_D!(sim::SimulationData)
         sim.geometry_data.ε_inv_x,
         sim.geometry_data.ε_inv_y,
         sim.geometry_data.ε_inv_z,
-        sim.boundary_data.σBx,
-        sim.boundary_data.σBy,
-        sim.boundary_data.σBz,
+        sim.boundary_data.σDx,
+        sim.boundary_data.σDy,
+        sim.boundary_data.σDz,
         ndrange = ndrange,
     )
 
@@ -260,9 +260,7 @@ end
 end
 
 function update_magnetic_sources!(sim::SimulationData, t::Real)
-    # table-stable iterator
     map((c) -> step_sources!(sim, c, t), (Hx(), Hy(), Hz()))
-
 
     # TODO update halo
     return
