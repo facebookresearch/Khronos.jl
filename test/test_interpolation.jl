@@ -11,9 +11,6 @@
 import Khronos
 using Test
 
-const USE_GPU = false;
-Khronos.choose_backend()
-
 Δx = 0.1;
 Δy = 0.1;
 Δz = nothing;

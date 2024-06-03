@@ -1,14 +1,13 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
+#
+# Inject an oblique Gaussian beam and plot its response.
 
-import fdtd
+import Khronos
 using CairoMakie
 using GeometryPrimitives
 
-fdtd.choose_backend(fdtd.CPUDevice(), Float64)
-"""
-    build_simulation(d, n, λ)
-TBW
-"""
+Khronos.choose_backend(Khronos.CUDADevice(), Float64)
+
 function build_simulation(λ, waist_radius, resolution)
 
     dpml = 1.0
@@ -22,8 +21,8 @@ function build_simulation(λ, waist_radius, resolution)
     boundary_layers = [[dpml, dpml], [dpml, dpml], [dpml, dpml]]
 
     sources = [
-        fdtd.GaussianBeamSource(
-            time_profile = fdtd.GaussianPulseSource(fcen = 1 / λ, fwidth = 0.2 * 1 / λ),
+        Khronos.GaussianBeamSource(
+            time_profile = Khronos.GaussianPulseSource(fcen = 1 / λ, fwidth = 0.2 * 1 / λ),
             center = [0, 0, -2 * monitor_height],
             size = [sxy, sxy, 0],
             beam_center = [0.0, 0.0, 0.0],
@@ -34,15 +33,15 @@ function build_simulation(λ, waist_radius, resolution)
     ]
 
     monitors = [
-        fdtd.DFTMonitor(
-            component = fdtd.Ex(),
+        Khronos.DFTMonitor(
+            component = Khronos.Ex(),
             center = [0, 0, 0],
             size = [monitor_xy, 0, 4 * sz],
             frequencies = [1 ./ λ],
         ),
     ]
 
-    sim = fdtd.Simulation(
+    sim = Khronos.Simulation(
         cell_size = cell_size,
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
@@ -54,19 +53,19 @@ function build_simulation(λ, waist_radius, resolution)
     return sim
 end
 
-function run_simulation!(sim::fdtd.SimulationData)
-    fdtd.run(
+function run_simulation!(sim::Khronos.SimulationData)
+    Khronos.run(
         sim,
-        until_after_sources = fdtd.stop_when_dft_decayed(
-            tolerance = 1e-11,
+        until_after_sources = Khronos.stop_when_dft_decayed(
+            tolerance = 1e-5,
             minimum_runtime = 0.0,
             maximum_runtime = 300.0,
         ),
     )
 end
 
-function plot_source_profile!(sim::fdtd.SimulationData)
-    fdtd.prepare_simulation!(sim)
+function plot_source_profile!(sim::Khronos.SimulationData)
+    Khronos.prepare_simulation!(sim)
     Ex = sum(sim.source_data[1].amplitude_data, dims = 3)[:, :, 1]
     heatmap(Ex)
 end
@@ -76,7 +75,14 @@ waist_radius = 0.75
 resolution = 20.0
 
 sim = build_simulation(λ, waist_radius, resolution)
-#plot_source_profile!(sim)
+
+# Visualize the source profile in the time and frequency domains
+frequencies = 0.75:0.005:1.25
+scene = Khronos.plot_timesource(sim, sim.sources[1], frequencies)
+save("sources.png", scene)
+
 run_simulation!(sim)
 
-fdtd.plot_monitor(sim.monitors[1], 1)
+# Visualize the response of the monitor
+scene = Khronos.plot_monitor(sim.monitors[1], 1)
+save("gaussian_beam.png", scene)
