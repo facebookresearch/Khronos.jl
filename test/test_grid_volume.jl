@@ -6,12 +6,10 @@ using Test
 
 
 @testset "2D GridVolumes" begin
-    Khronos.choose_backend()
     #TODO
 end
 
 @testset "3D GridVolumes" begin
-    Khronos.choose_backend()
     sim = Khronos.Simulation(
         cell_size = [4.0, 4.0, 4.0],
         cell_center = [0.0, 0.0, 0.0],
