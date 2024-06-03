@@ -5,15 +5,6 @@ using Statistics
 
 Makie.inline!(true)
 
-function plot2D(
-    sim::SimulationData,
-    component::Field,
-    center::Vector{Real},
-    size::Vector{Real},
-)
-    prepare_simulation!(sim)
-end
-
 function _get_plane_ranges(gv::GridVolume)
     x_range = gv.start_idx[1]:gv.end_idx[1]
     y_range = gv.start_idx[2]:gv.end_idx[2]
@@ -48,7 +39,7 @@ end
     symmetric_field_scaling::Bool = true,
 )
 
-TBW
+Plot each of the three 2D cross sections (XY, XZ, YZ) of a simulation (`sim`) as described by `vol`.
 """
 function plot2D(
     sim::SimulationData,
@@ -128,7 +119,7 @@ end
 TBW
 """
 function plot_monitor(monitor::DFTMonitor, frequency_idx::Int)
-    freq_data = get_dft_fields(monitor)[:, :, :, frequency_idx]
+    freq_data = Base.Array(get_dft_fields(monitor)[:, :, :, frequency_idx])
     if size(freq_data)[1] == 1
         freq_data = freq_data[1, :, :]
     elseif size(freq_data)[2] == 1
@@ -163,14 +154,8 @@ function plot_monitor(monitor::DFTMonitor, frequency_idx::Int)
     return f
 end
 
-
-"""
-    plot_timesource(::SimulationData, time_source::ContinuousWaveData)
-
-TBW
-"""
-function plot_timesource(::SimulationData, time_source::ContinuousWaveData)
-    error("Unable to plot the response of a CW source.")
+function plot_timesource(sim::SimulationData, source::Source, frequencies)
+    plot_timesource(sim, get_time_profile(source), frequencies)
 end
 
 """
@@ -185,7 +170,7 @@ function plot_timesource(sim::SimulationData, time_source::TimeSource, frequenci
     t = range(start = 0, stop = get_cutoff(time_source), step = sim.Δt)
     src_amplitude = zeros(size(t))
     for n in eachindex(t)
-        src_amplitude[n] = eval_time_source(time_source, t[n])
+        src_amplitude[n] = real(eval_time_source(time_source, t[n]))
     end
 
     # Compute the DTFT
