@@ -8,6 +8,7 @@ using KernelAbstractions
 using Revise
 using Logging
 using LinearAlgebra
+using OffsetArrays
 
 macro status(exs)
     @logmsg(0, exs)

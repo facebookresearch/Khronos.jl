@@ -326,7 +326,11 @@ function get_Δz(cell_size, Nz)
     return cell_size[3] / (Nz)
 end
 
-@with_kw mutable struct SimulationData{N,T,CN,CT}
+@with_kw mutable struct SimulationData{N,T,CN,CT,BT}
+    # N: Real number type
+    # T: Real array type
+    # CN: Complex number type
+    # CT: Complex array type
     cell_size::Vector{N} = N.(cell_size)
     cell_center::Any
     resolution::Any
@@ -348,7 +352,7 @@ end
     dimensionality::Type{<:Dimension} = ThreeD
 
     # Data to be generated upon initialization
-    fields::Union{Fields{T},Nothing} = nothing
+    fields::Union{Fields{BT},Nothing} = nothing
     source_data::Union{Vector{SourceData{CT}},Nothing} = nothing
     source_components::Union{Vector{<:Field},Nothing} = nothing
     boundary_data::Union{BoundaryData{T},Nothing} = nothing
@@ -363,6 +367,7 @@ Simulation(; kwargs...) = SimulationData{
     backend_array,
     complex_backend_number,
     complex_backend_array,
+    AbstractArray,
 }(;
     kwargs...,
 )

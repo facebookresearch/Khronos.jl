@@ -12,8 +12,15 @@ function _get_plane_ranges(gv::GridVolume)
     return (x_range, y_range, z_range)
 end
 
+function _pull_fields_from_device(sim::SimulationData, component::Field)
+    current_fields = get_fields_from_component(sim, component)
+    array_range = get_component_voxel_count(sim, component)
+    # Index out the ghost cells and collect to the host
+    current_fields = Base.Array(collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]))
+end
+
 function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
-    current_fields = Base.Array(get_fields_from_component(sim, component))
+    current_fields = _pull_fields_from_device(sim, component)
 
     vol_x = Volume(vol.center, [0, vol.size[2], vol.size[3]])
     vol_y = Volume(vol.center, [vol.size[1], 0, vol.size[3]])

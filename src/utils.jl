@@ -12,7 +12,7 @@ get_direction_index(::Z) = 3
 """
     get_component_voxel_count(sim, component)
 
-For a given component, get the nnumber of grid voxels throughout the domain.
+For a given component, get the number of grid voxels throughout the domain.
 """
 get_component_voxel_count(sim::SimulationData, ::Union{Ex,Dx}) =
     [sim.Nx, sim.Ny + 1, sim.Nz + 1]
@@ -53,10 +53,6 @@ end
 
 Base.IteratorsMD.CartesianIndices(gv::GridVolume) =
     CartesianIndices((1:gv.Nx, 1:gv.Ny, 1:gv.Nz))
-
-function create_arrays_from_surface()
-
-end
 
 function point_from_grid_index(
     sim::SimulationData,

@@ -1,6 +1,8 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 
+export prepare_simulation!, run, run_until, stop_when_dft_decayed, run_benchmark
+
 """
     increment_timestep!(sim::SimulationData)
 
@@ -50,6 +52,14 @@ function get_sim_dims(sim::SimulationData)
     #TODO add support for cylindrical coordinates
 end
 
+"""
+    prepare_simulation!(sim::SimulationData)
+
+Initialize a Simulation object (`sim`) such that it can be properly times.
+
+Specifically, allocate all of the relevant field components, build the
+permittivity and permeability arrays, etc.
+"""
 function prepare_simulation!(sim::SimulationData)
     if sim.is_prepared
         return
@@ -81,6 +91,15 @@ function prepare_simulation!(sim::SimulationData)
 end
 
 
+"""
+    run(
+    sim::SimulationData;
+    until::Union{Real,Function,Nothing} = nothing,
+    until_after_sources::Union{Real,Function,Nothing} = nothing,
+)
+
+TBW
+"""
 function run(
     sim::SimulationData;
     until::Union{Real,Function,Nothing} = nothing,
@@ -141,7 +160,11 @@ function run_until(sim::SimulationData, until::Real)
 end
 
 """
-    stop_when_dft_decayed(sim::SimulationData, tolerance)
+    stop_when_dft_decayed(;
+    tolerance::Real = 1e-6,
+    minimum_runtime::Real = 0.0,
+    maximum_runtime::Real = Inf,
+)::Function
 
 TBW
 """
@@ -197,6 +220,11 @@ function stop_when_dft_decayed(;
     return _stop
 end
 
+"""
+    run_benchmark(sim::SimulationData, until::Int)
+
+TBW
+"""
 function run_benchmark(sim::SimulationData, until::Int)
     if (!sim.is_prepared)
         prepare_simulation!(sim)

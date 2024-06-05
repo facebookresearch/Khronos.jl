@@ -23,13 +23,13 @@ sources = [
 sim = Khronos.Simulation(
     cell_size = [4.0, 4.0, 4.0],
     cell_center = [0.0, 0.0, 0.0],
-    resolution = 40,
+    resolution = 10,#40,
     sources = sources,
     boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
 )
 
 # Run the simulation for 10 "time units"
-t_end = 40.0;
+t_end = 1.0#40.0;
 Khronos.run(sim, until = t_end)
 
 # Plot cross sections of the result

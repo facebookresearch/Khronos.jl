@@ -5,6 +5,7 @@
 import Khronos
 using CairoMakie
 using GeometryPrimitives
+using LinearAlgebra
 
 Khronos.choose_backend(Khronos.CUDADevice(), Float64)
 
@@ -23,13 +24,14 @@ function build_simulation(λ, resolution)
     cell_size = [sxy, sxy, sz]
 
     boundary_layers = [[dpml, dpml], [dpml, dpml], [dpml, dpml]]
-
+    k_vector = [0.00, 0.0, 1.0]
+    k_vector = k_vector ./ norm(k_vector)
     sources = [
         Khronos.PlaneWaveSource(
             time_profile = Khronos.ContinuousWaveSource(fcen = 1.0 / λ),
             center = [0, 0, 0],
             size = [Inf, Inf, 0],
-            k_vector = [0.0, 0.0, 1.0],
+            k_vector = k_vector,
             polarization_angle = 0.0,
             amplitude = 1im,
         ),
