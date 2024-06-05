@@ -1,36 +1,8 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #
-# So there are several things we can do to improve the performance of these
-# kernels, depending on the hardware platform. While some of these improvements
-# are trivial and expected to give good performance, others should wait to be
-# implemented until benchmarks and profiling are performed.
-#
-# For better CUDA performance:
-# * Add `@const` where necesarry
-# * Leverage local memory
-# * Better block and warp usage
-#
-# For better CPU performance:
-# * Use `@inbounds` everywhere to prevent bounds checking
-# * Check how the threads are reading in data, and makes sure there's no
-#   contention.
-# * 32 bit should be twice as fast as 64 bit... but it's not. So something is
-#   wrong.
-#
-# For better Metal performance:
-# * debug the 32 bit issue, and more performance should appear here.
-#
-# Some other general things to try:
-# * Play with the settings of the kernel compiler
-# * Check type stability all the way down (and add tests)
-#
-# Note that there are additional kernels in `Sources.jl`, `DFT.jl`, and
-# `Monitors.jl`.
-#
-# Before we try *any* of these, let's come up with two or three more examples to
-# run this on (with various features) and be sure to run them at multiple
-# resolutions. We need to document everything. We also need to ensure everything
-# has at least a basic test.
+# Here lie the core timestepping kernels for the FDTD algorithm. Thanks to
+# multiple dispatch, we can simply focus on the fundamental (most complicated)
+# cases. We often need to use "function barriers" to ensure type stability.
 
 
 """
@@ -38,7 +10,7 @@
 
 Primary timestepping routine.
 
-Includes all the relevent steps to complete on full timestep, such as evolving
+Includes all the relevent steps to complete one full timestep, such as evolving
 all of the fields and updating all of the sources and monitors.
 """
 function step!(sim::SimulationData)
@@ -236,27 +208,25 @@ end
     idx_array = CartesianIndex(ix, iy, iz)
 
     # X component
-    if (1 < ix) && (1 < iy) && (1 < iz)
-        Kx = Δt * curl_x!(Ay, Az, Δy, Δz, idx_curl, ix, iy, iz)
-        σD_temp = get_σD(σDx, idx_array, Δt)
-        σ_prev = get_σ(σz, iz)
-        σ_next = get_σ(σy, iy)
-        generic_curl!(Kx, Cx, Ux, Tx, σD_temp, σ_next, σ_prev, idx_array)
+    Kx = Δt * curl_x!(Ay, Az, Δy, Δz, idx_curl, ix, iy, iz)
+    σD_temp = get_σD(σDx, idx_array, Δt)
+    σ_prev = get_σ(σz, iz)
+    σ_next = get_σ(σy, iy)
+    generic_curl!(Kx, Cx, Ux, Tx, σD_temp, σ_next, σ_prev, idx_array)
 
-        # Y component
-        Ky = Δt * curl_y!(Az, Ax, Δz, Δx, idx_curl, ix, iy, iz)
-        σD_temp = get_σD(σDy, idx_array, Δt)
-        σ_prev = get_σ(σx, ix)
-        σ_next = get_σ(σz, iz)
-        generic_curl!(Ky, Cy, Uy, Ty, σD_temp, σ_next, σ_prev, idx_array)
+    # Y component
+    Ky = Δt * curl_y!(Az, Ax, Δz, Δx, idx_curl, ix, iy, iz)
+    σD_temp = get_σD(σDy, idx_array, Δt)
+    σ_prev = get_σ(σx, ix)
+    σ_next = get_σ(σz, iz)
+    generic_curl!(Ky, Cy, Uy, Ty, σD_temp, σ_next, σ_prev, idx_array)
 
-        # Z component
-        Kz = Δt * curl_z!(Ax, Ay, Δx, Δy, idx_curl, ix, iy, iz)
-        σD_temp = get_σD(σDz, idx_array, Δt)
-        σ_prev = get_σ(σy, iy)
-        σ_next = get_σ(σx, ix)
-        generic_curl!(Kz, Cz, Uz, Tz, σD_temp, σ_next, σ_prev, idx_array)
-    end
+    # Z component
+    Kz = Δt * curl_z!(Ax, Ay, Δx, Δy, idx_curl, ix, iy, iz)
+    σD_temp = get_σD(σDz, idx_array, Δt)
+    σ_prev = get_σ(σy, iy)
+    σ_next = get_σ(σx, ix)
+    generic_curl!(Kz, Cz, Uz, Tz, σD_temp, σ_next, σ_prev, idx_array)
 end
 
 function update_magnetic_sources!(sim::SimulationData, t::Real)
@@ -449,16 +419,6 @@ get_σD(σD, idx_array, Δt) = scale_by_half(Δt * σD[idx_array])
 #     σ - PML conductivites
 # """
 
-# # 2D, 2DTE, 2DTM, 3D (4)
-# # D, B (2)
-# # x, y, z (3)
-# # Sources (2)
-# # Polarizabilities (2)
-# # Conductivity (2)
-# # PML (2)
-# # ε, εxx+εyy+εzz, εxy ... (3)
-# # Total stencils =
-
 @inline update_cache(A::AbstractArray, idx_array) = A[idx_array]
 @inline update_cache(A::Nothing, idx_array) = 0 # FIXME
 @inline function clear_source(A::AbstractArray, idx_array)
@@ -529,45 +489,34 @@ end
     ix, iy, iz = @index(Global, NTuple)
     idx_array = CartesianIndex(ix, iy, iz)
 
-    if (ix <= size(Ax)[1]) && (iy <= size(Ax)[2]) && (iz <= size(Ax)[3])
-        #Ax[ix,iy,iz] =  Tx[ix,iy,iz]
-        update_field_generic(
-            Ax,
-            Tx,
-            Wx,
-            Px,
-            Sx,
-            get_m_inv(m_inv, m_inv_x, idx_array),
-            get_σ(σx, ix),
-            idx_array,
-        )
-    end
-
-    if (ix <= size(Ay)[1]) && (iy <= size(Ay)[2]) && (iz <= size(Ay)[3])
-        #Ay[ix,iy,iz] =  Ty[ix,iy,iz]
-        update_field_generic(
-            Ay,
-            Ty,
-            Wy,
-            Py,
-            Sy,
-            get_m_inv(m_inv, m_inv_y, idx_array),
-            get_σ(σy, iy),
-            idx_array,
-        )
-    end
-
-    if (ix <= size(Az)[1]) && (iy <= size(Az)[2]) && (iz <= size(Az)[3])
-        #Az[ix,iy,iz] =  Tz[ix,iy,iz]
-        update_field_generic(
-            Az,
-            Tz,
-            Wz,
-            Pz,
-            Sz,
-            get_m_inv(m_inv, m_inv_z, idx_array),
-            get_σ(σz, iz),
-            idx_array,
-        )
-    end
+    update_field_generic(
+        Ax,
+        Tx,
+        Wx,
+        Px,
+        Sx,
+        get_m_inv(m_inv, m_inv_x, idx_array),
+        get_σ(σx, ix),
+        idx_array,
+    )
+    update_field_generic(
+        Ay,
+        Ty,
+        Wy,
+        Py,
+        Sy,
+        get_m_inv(m_inv, m_inv_y, idx_array),
+        get_σ(σy, iy),
+        idx_array,
+    )
+    update_field_generic(
+        Az,
+        Tz,
+        Wz,
+        Pz,
+        Sz,
+        get_m_inv(m_inv, m_inv_z, idx_array),
+        get_σ(σz, iz),
+        idx_array,
+    )
 end

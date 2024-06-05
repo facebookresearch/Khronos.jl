@@ -1,5 +1,9 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+# -------------------------------------------------------------------------- #
+# General field array utility functions
+# -------------------------------------------------------------------------- #
+
 """
     next_dir(direction)
 
@@ -89,92 +93,140 @@ get_fields_from_component(sim::SimulationData, ::Hz) = sim.fields.fHz
 # FIXME: once we have offdiag compoents, the inverse is more complicated...
 get_fields_from_component(sim::SimulationData, ::εx) = inv.(sim.geometry_data.ε_inv_x)
 get_fields_from_component(sim::SimulationData, ::εy) = inv.(sim.geometry_data.ε_inv_y)
-get_fields_from_component(sim::SimulationData, ::εz) = inv.(sim.geometry_data.ε_inv_z)
+function get_fields_from_component(sim::SimulationData, ::εz)
+    inv.(sim.geometry_data.ε_inv_z)
+end
+
+# -------------------------------------------------------------------------- #
+# General simulation field allocation functions.
+#
+#
+# [smartalecH] Currently, Khronos.jl only supports full 3D simulations. In the
+# future, however, it would be nice to support 2D simulations (and
+# cylindrically-symmetric simulations). In this case, one could specify sources
+# and materials that only require half as many computational resources as a full
+# 2D simulation. Specifically, they only require a TE or a TM configuration. We
+# can create independent functions that set up field arrays for these disjoint
+# cases, and then rely on dispatch to pick the proper configuration once Khronos
+# is ready for it. Since 3D is just a superset of the two configurations, we'll
+# just call both.
+# -------------------------------------------------------------------------- #
 
 """
-    get_fields_args_TE(sim)
+    initialize_field_component_array(sim::SimulationData, component::Field)::AbstractArray
 
-Pull the proper fields arguments for a 2D TE simulation.
+Initialize an electromagnetic field array for a given `component` over the
+entire simulation (`sim`) domain.
+
+We add a "ghost" pixel to the boundary of our domain to more easily facilitate
+boundary conditions with the GPU. In the future, we can use this same formalism
+to enable MPI communication between "chunks" of data.
+
+To ensure that these ghost pixels serve as a "drop-in" with the existing stencils,
+we use offset arrays and start 1-based indexing after the first ghost pixel.
 """
-function get_fields_args_TE(sim::SimulationData)
-    return (
-        fEz = zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...),
-        fDz = zeros(get_component_voxel_count(sim, Dz())[1:sim.ndims]...),
-        fCDz = needs_C(sim, Dz()) ?
-               zeros(get_component_voxel_count(sim, Dz())[1:sim.ndims]...) : nothing,
-        fUDz = needs_U(sim, Dz()) ?
-               zeros(get_component_voxel_count(sim, Dz())[1:sim.ndims]...) : nothing,
-        fWDz = needs_W(sim, Dz()) ?
-               zeros(get_component_voxel_count(sim, Dz())[1:sim.ndims]...) : nothing,
-        fHx = zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...),
-        fBx = zeros(get_component_voxel_count(sim, Bx())[1:sim.ndims]...),
-        fCBx = needs_C(sim, Bx()) ?
-               zeros(get_component_voxel_count(sim, Bx())[1:sim.ndims]...) : nothing,
-        fUBx = needs_U(sim, Bx()) ?
-               zeros(get_component_voxel_count(sim, Bx())[1:sim.ndims]...) : nothing,
-        fWBx = needs_W(sim, Bx()) ?
-               zeros(get_component_voxel_count(sim, Bx())[1:sim.ndims]...) : nothing,
-        fHy = zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...),
-        fBy = zeros(get_component_voxel_count(sim, By())[1:sim.ndims]...),
-        fCBy = needs_C(sim, By()) ?
-               zeros(get_component_voxel_count(sim, By())[1:sim.ndims]...) : nothing,
-        fUBy = needs_U(sim, By()) ?
-               zeros(get_component_voxel_count(sim, By())[1:sim.ndims]...) : nothing,
-        fWBy = needs_W(sim, By()) ?
-               zeros(get_component_voxel_count(sim, By())[1:sim.ndims]...) : nothing,
-        fSBx = Hx() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing,
-        fSBy = Hy() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing,
-        fSDz = Ez() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing,
+function initialize_field_component_array(
+    sim::SimulationData,
+    component::Field,
+)::AbstractArray
+    array_dims = get_component_voxel_count(sim, component) .+ 2
+    return OffsetArray(
+        KernelAbstractions.zeros(backend_engine, backend_number, array_dims...),
+        -1,
+        -1,
+        -1,
     )
 end
 
 """
-    get_fields_args_TM(sim)
+    allocate_fields_TE(sim)
 
-Pull the proper fields arguments for a 2D TM simulation.
+Allocate the proper field components for a 2D TE simulation (where the E-field is
+"out-of-plane"). This includes Dz/Ez, Bx/Hx, By/Hy, and their corresponding
+current sources. 
 """
-function get_fields_args_TM(sim::SimulationData)
+function allocate_fields_TE(sim::SimulationData)
     return (
-        fHz = zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...),
-        fBz = zeros(get_component_voxel_count(sim, Bz())[1:sim.ndims]...),
-        fCBz = needs_C(sim, Bz()) ?
-               zeros(get_component_voxel_count(sim, Bz())[1:sim.ndims]...) : nothing,
-        fUBz = needs_U(sim, Bz()) ?
-               zeros(get_component_voxel_count(sim, Bz())[1:sim.ndims]...) : nothing,
-        fWBz = needs_W(sim, Bz()) ?
-               zeros(get_component_voxel_count(sim, Bz())[1:sim.ndims]...) : nothing,
-        fEx = zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...),
-        fDx = zeros(get_component_voxel_count(sim, Dx())[1:sim.ndims]...),
-        fCDx = needs_C(sim, Dx()) ?
-               zeros(get_component_voxel_count(sim, Dx())[1:sim.ndims]...) : nothing,
-        fUDx = needs_U(sim, Dx()) ?
-               zeros(get_component_voxel_count(sim, Dx())[1:sim.ndims]...) : nothing,
-        fWDx = needs_W(sim, Dx()) ?
-               zeros(get_component_voxel_count(sim, Dx())[1:sim.ndims]...) : nothing,
-        fEy = zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...),
-        fDy = zeros(get_component_voxel_count(sim, Dy())[1:sim.ndims]...),
-        fCDy = needs_C(sim, Dy()) ?
-               zeros(get_component_voxel_count(sim, Dy())[1:sim.ndims]...) : nothing,
-        fUDy = needs_U(sim, Dy()) ?
-               zeros(get_component_voxel_count(sim, Dy())[1:sim.ndims]...) : nothing,
-        fWDy = needs_W(sim, Dy()) ?
-               zeros(get_component_voxel_count(sim, Dy())[1:sim.ndims]...) : nothing,
-        fSDx = Ex() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing,
-        fSDy = Ey() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing,
-        fSBz = Hz() ∈ sim.source_components ?
-               zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing,
+        fEz = initialize_field_component_array(sim, Ez()),
+        fDz = initialize_field_component_array(sim, Dz()),
+        # Only allocate PML auxilliary fields if needed
+        fCDz = needs_C(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
+        fUDz = needs_U(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
+        fWDz = needs_W(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
+        fHx = initialize_field_component_array(sim, Hx()),
+        fBx = initialize_field_component_array(sim, Bx()),
+        # Only allocate PML auxilliary fields if needed
+        fCBx = needs_C(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
+        fUBx = needs_U(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
+        fWBx = needs_W(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
+        fHy = initialize_field_component_array(sim, Hy()),
+        fBy = initialize_field_component_array(sim, By()),
+        # Only allocate PML auxilliary fields if needed
+        fCBy = needs_C(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
+        fUBy = needs_U(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
+        fWBy = needs_W(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
+
+        # Only allocate source arrays if we specify sources for that component
+        fSBx = Hx() ∈ sim.source_components ? initialize_field_component_array(sim, Hx()) :
+               nothing,
+        fSBy = Hy() ∈ sim.source_components ? initialize_field_component_array(sim, Hy()) :
+               nothing,
+        fSDz = Ez() ∈ sim.source_components ? initialize_field_component_array(sim, Ez()) :
+               nothing,
     )
 end
 
-function init_fields(sim::SimulationData, ::Union{Type{TwoD},Type{ThreeD}})
+"""
+    allocate_fields_TM(sim::SimulationData)
+
+Allocate the proper field components for a 2D TM simulation (where the E-field
+is "in-plane"). This includes Bz/Hz, Dx/Ex, Dy/Ey, and their corresponding
+current sources. 
+"""
+function allocate_fields_TM(sim::SimulationData)
+    return (
+        fHz = initialize_field_component_array(sim, Hz()),
+        fBz = initialize_field_component_array(sim, Bz()),
+        # Only allocate PML auxilliary fields if needed
+        fCBz = needs_C(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
+        fUBz = needs_U(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
+        fWBz = needs_W(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
+        fEx = initialize_field_component_array(sim, Ex()),
+        fDx = initialize_field_component_array(sim, Dx()),
+        # Only allocate PML auxilliary fields if needed
+        fCDx = needs_C(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
+        fUDx = needs_U(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
+        fWDx = needs_W(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
+        fEy = initialize_field_component_array(sim, Ey()),
+        fDy = initialize_field_component_array(sim, Dy()),
+        # Only allocate PML auxilliary fields if needed
+        fCDy = needs_C(sim, Dy()) ? initialize_field_component_array(sim, Dy()) : nothing,
+        fUDy = needs_U(sim, Dy()) ? initialize_field_component_array(sim, Dy()) : nothing,
+        fWDy = needs_W(sim, Dy()) ? initialize_field_component_array(sim, Dy()) : nothing,
+
+        # Only allocate source arrays if we specify sources for that component
+        fSDx = Ex() ∈ sim.source_components ? initialize_field_component_array(sim, Ex()) :
+               nothing,
+        fSDy = Ey() ∈ sim.source_components ? initialize_field_component_array(sim, Ey()) :
+               nothing,
+        fSBz = Hz() ∈ sim.source_components ? initialize_field_component_array(sim, Hz()) :
+               nothing,
+    )
+end
+
+"""
+    init_fields(sim::SimulationData, ::Union{Type{TwoD},Type{ThreeD}})
+
+Allocate all the necessary field components for a full 3D simulation.
+"""
+function init_fields(sim::SimulationData, ::Union{Type{ThreeD}})
     sim.fields =
-        Fields{backend_array}(; get_fields_args_TE(sim)..., get_fields_args_TM(sim)...)
+        Fields{AbstractArray}(; allocate_fields_TE(sim)..., allocate_fields_TM(sim)...)
 end
+
+# -------------------------------------------------------------------------- #
+# PML auxilliary field utility functions
+# -------------------------------------------------------------------------- #
 
 """
     needs_C(sim::SimulationData, f::Field)
@@ -230,6 +282,9 @@ function needs_W(sim::SimulationData, f::Field)
     return !isnothing(get_pml_conductivity_from_field(sim, f, dir))
 end
 
+# -------------------------------------------------------------------------- #
+# Specific usecase field utility functions
+# -------------------------------------------------------------------------- #
 
 """
     get_fields_for_planewave(
@@ -274,29 +329,4 @@ function get_fields_for_planewave(
         end
     end
     return fields
-end
-
-struct FieldProfile{T}
-    Ex::Vector{T}
-    Ey::Vector{T}
-    Ez::Vector{T}
-    Hx::Vector{T}
-    Hy::Vector{T}
-    Hz::Vector{T}
-    gv_Ex::GridVolume
-    gv_Ey::GridVolume
-    gv_Ez::GridVolume
-    gv_Hx::GridVolume
-    gv_Hy::GridVolume
-    gv_Hz::GridVolume
-end
-
-function overlap_integral(
-    field_profile_1::FieldProfile{T},
-    field_profile_2::FieldProfile{T},
-) where {T}
-    # interpolate fields to center of yee cell
-
-    # perform the integral
-
 end
