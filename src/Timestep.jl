@@ -70,7 +70,7 @@ function step_B_from_E!(sim::SimulationData)
         ndrange = ndrange,
     )
 
-    
+
     # TODO update halo
     return
 end

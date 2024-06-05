@@ -125,9 +125,17 @@ to enable MPI communication between "chunks" of data.
 To ensure that these ghost pixels serve as a "drop-in" with the existing stencils,
 we use offset arrays and start 1-based indexing after the first ghost pixel.
 """
-function initialize_field_component_array(sim::SimulationData, component::Field)::AbstractArray
+function initialize_field_component_array(
+    sim::SimulationData,
+    component::Field,
+)::AbstractArray
     array_dims = get_component_voxel_count(sim, component) .+ 2
-    return OffsetArray(KernelAbstractions.zeros(backend_engine, backend_number, array_dims...), -1, -1, -1)
+    return OffsetArray(
+        KernelAbstractions.zeros(backend_engine, backend_number, array_dims...),
+        -1,
+        -1,
+        -1,
+    )
 end
 
 """
@@ -145,25 +153,26 @@ function allocate_fields_TE(sim::SimulationData)
         fCDz = needs_C(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
         fUDz = needs_U(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
         fWDz = needs_W(sim, Dz()) ? initialize_field_component_array(sim, Dz()) : nothing,
-        
         fHx = initialize_field_component_array(sim, Hx()),
         fBx = initialize_field_component_array(sim, Bx()),
         # Only allocate PML auxilliary fields if needed
         fCBx = needs_C(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
         fUBx = needs_U(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
         fWBx = needs_W(sim, Bx()) ? initialize_field_component_array(sim, Bx()) : nothing,
-        
         fHy = initialize_field_component_array(sim, Hy()),
         fBy = initialize_field_component_array(sim, By()),
         # Only allocate PML auxilliary fields if needed
         fCBy = needs_C(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
         fUBy = needs_U(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
         fWBy = needs_W(sim, By()) ? initialize_field_component_array(sim, By()) : nothing,
-        
+
         # Only allocate source arrays if we specify sources for that component
-        fSBx = Hx() ∈ sim.source_components ? initialize_field_component_array(sim, Hx()) : nothing,
-        fSBy = Hy() ∈ sim.source_components ? initialize_field_component_array(sim, Hy()) : nothing,
-        fSDz = Ez() ∈ sim.source_components ? initialize_field_component_array(sim, Ez()) : nothing,
+        fSBx = Hx() ∈ sim.source_components ? initialize_field_component_array(sim, Hx()) :
+               nothing,
+        fSBy = Hy() ∈ sim.source_components ? initialize_field_component_array(sim, Hy()) :
+               nothing,
+        fSDz = Ez() ∈ sim.source_components ? initialize_field_component_array(sim, Ez()) :
+               nothing,
     )
 end
 
@@ -182,14 +191,12 @@ function allocate_fields_TM(sim::SimulationData)
         fCBz = needs_C(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
         fUBz = needs_U(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
         fWBz = needs_W(sim, Bz()) ? initialize_field_component_array(sim, Bz()) : nothing,
-        
         fEx = initialize_field_component_array(sim, Ex()),
         fDx = initialize_field_component_array(sim, Dx()),
         # Only allocate PML auxilliary fields if needed
         fCDx = needs_C(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
         fUDx = needs_U(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
         fWDx = needs_W(sim, Dx()) ? initialize_field_component_array(sim, Dx()) : nothing,
-        
         fEy = initialize_field_component_array(sim, Ey()),
         fDy = initialize_field_component_array(sim, Dy()),
         # Only allocate PML auxilliary fields if needed
@@ -198,9 +205,12 @@ function allocate_fields_TM(sim::SimulationData)
         fWDy = needs_W(sim, Dy()) ? initialize_field_component_array(sim, Dy()) : nothing,
 
         # Only allocate source arrays if we specify sources for that component
-        fSDx = Ex() ∈ sim.source_components ? initialize_field_component_array(sim, Ex()) : nothing,
-        fSDy = Ey() ∈ sim.source_components ? initialize_field_component_array(sim, Ey()) : nothing,
-        fSBz = Hz() ∈ sim.source_components ? initialize_field_component_array(sim, Hz()) : nothing,
+        fSDx = Ex() ∈ sim.source_components ? initialize_field_component_array(sim, Ex()) :
+               nothing,
+        fSDy = Ey() ∈ sim.source_components ? initialize_field_component_array(sim, Ey()) :
+               nothing,
+        fSBz = Hz() ∈ sim.source_components ? initialize_field_component_array(sim, Hz()) :
+               nothing,
     )
 end
 

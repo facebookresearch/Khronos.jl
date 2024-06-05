@@ -16,7 +16,9 @@ function _pull_fields_from_device(sim::SimulationData, component::Field)
     current_fields = get_fields_from_component(sim, component)
     array_range = get_component_voxel_count(sim, component)
     # Index out the ghost cells and collect to the host
-    current_fields = Base.Array(collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]))
+    current_fields = Base.Array(
+        collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]),
+    )
 end
 
 function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
