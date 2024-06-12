@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 
 """
     get_direction_index(direction)
@@ -14,17 +14,17 @@ get_direction_index(::Z) = 3
 
 For a given component, get the number of grid voxels throughout the domain.
 """
-get_component_voxel_count(sim::SimulationData, ::Union{Ex,Dx}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Ex,Dx,εx}) =
     [sim.Nx, sim.Ny + 1, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData, ::Union{Ey,Dy}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Ey,Dy,εy}) =
     [sim.Nx + 1, sim.Ny, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData, ::Union{Ez,Dz}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Ez,Dz,εz}) =
     [sim.Nx + 1, sim.Ny + 1, sim.Nz]
-get_component_voxel_count(sim::SimulationData, ::Union{Hx,Bx}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Hx,Bx,μx}) =
     [sim.Nx + 1, sim.Ny, sim.Nz]
-get_component_voxel_count(sim::SimulationData, ::Union{Hy,By}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Hy,By,μy}) =
     [sim.Nx, sim.Ny + 1, sim.Nz]
-get_component_voxel_count(sim::SimulationData, ::Union{Hz,Bz}) =
+get_component_voxel_count(sim::SimulationData, ::Union{Hz,Bz,μz}) =
     [sim.Nx, sim.Ny, sim.Nz + 1]
 get_component_voxel_count(sim::SimulationData, ::Center) = [sim.Nx, sim.Ny, sim.Nz]
 
@@ -472,20 +472,20 @@ end
 """
     get_neighbors(x::AbstractArray, point::Float64)
 
-TBW
+Returns the two array indices closest to a `point` within a 1D array, `x`.
 """
 function get_neighbors(x::AbstractArray, point::Float64)
     # get closest point
-    closest_idx = argmin(abs.(x - point))
+    closest_idx = argmin(abs.(x .- point))
     # determine which side and get the other point
     if (x[closest_idx] == point) || (closest_idx) == 1 || (closest_idx == length(x))
         left_idx = right_idx = closest_idx
     elseif x[closest_idx] > point
-        left_idx = x[closest_idx-1]
-        right_idx = x[closest_idx]
+        left_idx = closest_idx - 1
+        right_idx = closest_idx
     else
-        left_idx = x[closest_idx]
-        right_idx = x[closest_idx+1]
+        left_idx = closest_idx
+        right_idx = closest_idx + 1
     end
 
     return (left_idx, right_idx)
@@ -526,6 +526,10 @@ function bilinear_interpolator(
     # linearly interpolate top x1
     top_val = linear_interpolator(x1, y[:, top_idx], point[1])
 
+    if bottom_idx == top_idx
+        return top_val
+    end
+
     # linearly interpolate bottom x1
     bottom_val = linear_interpolator(x1, y[:, bottom_idx], point[1])
 
@@ -554,13 +558,20 @@ function trilinear_interpolator(
     # bilinearly interpolate top (x1,x2)
     top_val = bilinear_interpolator(x1, x2, y[:, :, top_idx], point[1:2])
 
+    if bottom_idx == top_idx
+        return top_val
+    end
+
     # bilinearly interpolate bottom (x1,x2)
     bottom_val = bilinear_interpolator(x1, x2, y[:, :, bottom_idx], point[1:2])
 
     # manually linearly interpolate x3
     Δz = x3[top_idx] - x3[bottom_idx]
+
     bottom_weight = (point[3] - x3[bottom_idx]) / Δz
+
     top_weight = (x3[top_idx] - point[3]) / Δz
+
 
     return bottom_weight * bottom_val + top_weight * top_val
 end
@@ -568,7 +579,10 @@ end
 """
     gen_interpolator_from_array(data::AbstractArray, vol::Volume)
 
-TBW
+Given a 3D array (`data`) corresponding to a volume (`vol`) generate a trilinear
+interpolator funtion.
+
+Note that one or more axes may be singleton.
 """
 function gen_interpolator_from_array(data::AbstractArray, vol::Volume)
 
@@ -578,15 +592,23 @@ function gen_interpolator_from_array(data::AbstractArray, vol::Volume)
     end
 
     # pull the grid from the array
-    ranges = [
-        collect(
-            range(
-                vol.center[k] - vol.size[k] / 2,
-                vol.center[k] + vol.size[k] / 2,
-                length = size(data)[k],
-            ),
-        ) for k = 1:3
-    ]
+    ranges = []
+    for current_axis = 1:3
+        if size(data)[current_axis] == 1
+            push!(ranges, [vol.center[current_axis]])
+        else
+            push!(
+                ranges,
+                collect(
+                    range(
+                        vol.center[current_axis] - vol.size[current_axis] / 2,
+                        vol.center[current_axis] + vol.size[current_axis] / 2,
+                        length = size(data)[current_axis],
+                    ),
+                ),
+            )
+        end
+    end
 
     function interpolator(point)
         return trilinear_interpolator(ranges[1], ranges[2], ranges[3], data, point)

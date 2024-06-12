@@ -1,4 +1,6 @@
-# TODO: Generalize to more backends and allow more user control.
+# (c) Meta Platforms, Inc. and affiliates.
+#
+# Handle all of the backend loading.
 using CUDA
 using CUDA.CUDAKernels
 using Metal

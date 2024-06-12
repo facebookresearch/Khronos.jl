@@ -1,7 +1,8 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 
 module Khronos
 
+using Einsum
 using GeometryPrimitives
 using Parameters
 using KernelAbstractions
@@ -9,6 +10,7 @@ using Revise
 using Logging
 using LinearAlgebra
 using OffsetArrays
+import VectorModesolver
 
 macro status(exs)
     @logmsg(0, exs)
@@ -23,10 +25,11 @@ include("load_deps.jl")
 
 include("DataStructures.jl")
 include("utils.jl")
+include("Geometry.jl")
+include("Mode.jl")
 include("Boundaries.jl")
 include("Sources/Sources.jl")
 include("Fields.jl")
-include("Geometry.jl")
 include("DFT.jl")
 include("Monitors.jl")
 include("Timestep.jl")
