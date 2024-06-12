@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 
 using Test
 
@@ -6,6 +6,8 @@ using Test
 
     include("test_interpolation.jl")
     include("test_grid_volume.jl")
+    include("test_materials.jl")
+    include("test_mode.jl")
     include("test_sources.jl")
     include("test_timestep.jl")
     include("test_visualization.jl")

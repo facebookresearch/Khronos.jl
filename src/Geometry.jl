@@ -1,3 +1,9 @@
+# (c) Meta Platforms, Inc. and affiliates.
+#
+# Contains all relevant functions for manipulating geometry.
+#
+# NOTE [smartalecH] Don't use Inf to specify bounds in gometric shapes, as it's
+# not compatible with `findfirst`.
 
 """
     Base.findfirst()
@@ -285,3 +291,64 @@ get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Y) =
     sim.geometry_data.σDy
 get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Z) =
     sim.geometry_data.σDz
+
+# ---------------------------------------------------------- #
+# Material functions
+# ---------------------------------------------------------- #
+
+function get_ε_at_frequency(material, frequency)
+    ε = zeros(ComplexF64, 3, 3)
+
+    # Account for all the DC terms first
+    ε .+= isnothing(material.ε) ? 0 : material.ε * I(3)
+    ε[1, 1] += isnothing(material.εx) ? 0 : material.εx
+    ε[2, 2] += isnothing(material.εy) ? 0 : material.εy
+    ε[3, 3] += isnothing(material.εz) ? 0 : material.εz
+    ε[1, 2] += isnothing(material.εxy) ? 0 : material.εxy
+    ε[2, 1] += isnothing(material.εxy) ? 0 : material.εxy
+    ε[1, 3] += isnothing(material.εxz) ? 0 : material.εxz
+    ε[3, 1] += isnothing(material.εxz) ? 0 : material.εxz
+    ε[2, 3] += isnothing(material.εyz) ? 0 : material.εyz
+    ε[3, 2] += isnothing(material.εyz) ? 0 : material.εyz
+
+    # Now handle all the conductivities
+    ω = 2 * π * frequency
+    if !isnothing(material.σD)
+        ε = (1 .+ im * material.σD / ω .* I(3)) .* ε
+    end
+    if !isnothing(material.σDx)
+        ε[1, 1] = (1 + im * material.σDx / ω) * ε[1, 1]
+    end
+    if !isnothing(material.σDy)
+        ε[2, 2] = (1 + im * material.σDy / ω) * ε[2, 2]
+    end
+    if !isnothing(material.σDx)
+        ε[3, 3] = (1 + im * material.σDz / ω) * ε[3, 3]
+    end
+
+    return ε
+end
+
+function fit_complex_material(ε::Number, frequency::Number)
+    return Material{Float64}(ε = real(ε), σD = 2 * π * frequency * imag(ε) / real(ε))
+end
+
+"""
+    transform_material(material::AbstractArray)::AbstractArray
+
+Transforms a material tensor `material` by a specified `transformation_matrix`.
+
+More generally, the susceptibilities χ are transformed to MχMᵀ/|det M|, which
+corresponds to [transformation
+optics](http://math.mit.edu/~stevenj/18.369/coordinate-transform.pdf) for an
+arbitrary curvilinear coordinate transformation with Jacobian matrix M. The
+absolute value of the determinant is to prevent inadvertent construction of
+left-handed materials
+"""
+function transform_material(
+    material::AbstractArray,
+    transformation_matrix::AbstractArray,
+)::AbstractArray
+    return transformation_matrix * material * transformation_matrix' /
+           det(transformation_matrix)
+end

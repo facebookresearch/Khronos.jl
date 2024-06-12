@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 #
 # Simulate the scattering of a planewave off of a conductive sphere.
 

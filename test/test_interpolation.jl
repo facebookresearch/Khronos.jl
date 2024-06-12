@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 
 # test the interpolation and restriction functions inside utils.jl. these are
 # primarily used to create monitor and source regions, where interpolation and
@@ -91,4 +91,17 @@ end
         restrict_to_array!(w, line_x_volume)
         @test sum(w) ≈ sx * sy atol = 1e-14
     end
+end
+
+function test_interpolation(Nx, Ny, Nz, size)
+    data = rand(Nx, Ny, Nz)
+    vol = Khronos.Volume(center = [0.0, 0.0, 0.0], size = size)
+    interp = Khronos.gen_interpolator_from_array(data, vol)
+    @test all(!isnan.(interp([0.0, 0.0, 0.0])))
+end
+@testset "Trilinear interpolation" begin
+    test_interpolation(24, 12, 1, [2.0, 1.0, 0.0])
+    test_interpolation(24, 1, 12, [2.0, 0.0, 1.0])
+    test_interpolation(1, 24, 12, [1.0, 2.0, 1.0])
+    test_interpolation(24, 12, 12, [2.0, 1.0, 1.0])
 end

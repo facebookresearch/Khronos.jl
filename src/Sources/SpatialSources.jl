@@ -1,20 +1,20 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# (c) Meta Platforms, Inc. and affiliates.
 #
 # Here live the various functions and routines needed to implement a source that
 # is spatially varying. Importantly, all spatially varying sources take as one
 # of their parameters the corresponding time profile (temporal dependence).
+
+export UniformSource, EquivalentSource, PlaneWaveSource, GaussianBeamSource, ModeSource
+
+# ---------------------------------------------------------- #
+# Interface functions
+# ---------------------------------------------------------- #
 #
 # Each source is defined via the following interface functions. Since the
 # initialization of the source is *not* done in the main hot loop, and very
 # rarely encompassing the whole domain, we don't need to worry too much about
 # dynamic dispatch. So we'll leverage multiple dispatch as much as possible and
 # worry about type stability once it's a problem.
-
-export UniformSource, EquivalentSource, PlaneWaveSource, GaussianBeamSource
-
-# ---------------------------------------------------------- #
-# Interface functions
-# ---------------------------------------------------------- #
 
 """
     get_time_profile(source::Source)
@@ -82,15 +82,6 @@ end
 # ---------------------------------------------------------- #
 # Uniform source
 # ---------------------------------------------------------- #
-
-@with_kw struct UniformSourceData <: Source
-    time_profile::TimeSource
-    component::Field
-    amplitude::Number = 1.0
-    center::AbstractVector = [0.0, 0.0, 0.0]
-    size::AbstractVector = [0.0, 0.0, 0.0]
-end
-
 """
     UniformSource(;
     time_profile::TimeSource,
@@ -100,7 +91,10 @@ end
     size::AbstractVector = [0.0, 0.0, 0.0],
     )
 
-TBW
+Generates a spatially uniform source profile for a given `component`,
+`amplitude`, and `time_profile`. 
+    
+The size and location are determined by `size` and `center` respectively.
 """
 function UniformSource(;
     time_profile::TimeSource,
@@ -118,6 +112,14 @@ function UniformSource(;
     )
 end
 
+@with_kw struct UniformSourceData <: Source
+    time_profile::TimeSource
+    component::Field
+    amplitude::Number = 1.0
+    center::AbstractVector = [0.0, 0.0, 0.0]
+    size::AbstractVector = [0.0, 0.0, 0.0]
+end
+
 function get_source_profile(::UniformSourceData, ::Vector{<:Real}, ::Field)
     return 1.0
 end
@@ -129,15 +131,6 @@ end
 # ---------------------------------------------------------- #
 # Equivalent source
 # ---------------------------------------------------------- #
-
-@with_kw struct EquivalentSourceData <: Source
-    time_profile::TimeSource
-    center::AbstractVector = [0.0, 0.0, 0.0]
-    size::AbstractVector = [0.0, 0.0, 0.0]
-    amplitude::Number = 1.0
-    source_profile::Dict{<:Field,<:Function}
-end
-
 """
     EquivalentSource(;
     time_profile::TimeSource,
@@ -154,7 +147,7 @@ For the injection to work as expected (i.e. to reproduce the required `E` and
 `H` fields), the field data must decay by the edges of the source plane, or the
 source plane must span the entire simulation domain and the fields must match
 the simulation boundary conditions. The equivalent source currents are fully
-defined by the field components tangential to the source plane. For e.g. source
+defined by the field components tangential to the source plane. For e.g. sources
 normal along z, the normal components (Ez and Hz) can be provided but will have
 no effect on the results, and at least one of the tangential components has to
 be in the dataset, i.e. at least one of Ex, Ey, Hx, and Hy.
@@ -180,58 +173,65 @@ function EquivalentSource(;
 
     src_vol = Volume(center = center, size = size)
     normal_vector = get_normal_vector(src_vol)
-    transverse_fields = plane_normal_direction(src_vol)
 
-    Ex = fields[Ex()]
-    Ey = fields[Ey()]
-    Ez = fields[Ez()]
-    Hx = fields[Hx()]
-    Hy = fields[Hy()]
-    Hz = fields[Hz()]
+    Ex_field = fields[Ex()]
+    Ey_field = fields[Ey()]
+    Ez_field = fields[Ez()]
+    Hx_field = fields[Hx()]
+    Hy_field = fields[Hy()]
+    Hz_field = fields[Hz()]
 
-    current_sources = dict(
-        # Electric current J = nHat x H
+    current_sources = Dict(
+        # Electric current Ĵ = n̂×Ĥ
         Ex() => gen_interpolator_from_array(
-            normal_vector[1] * Hz .- normal_vector[2] * Hy,
+            normal_vector[2] * Hz_field .- normal_vector[3] * Hy_field,
             src_vol,
         ),
         Ey() => gen_interpolator_from_array(
-            normal_vector[2] * Hx .- normal_vector[0] * Hz,
+            normal_vector[3] * Hx_field .- normal_vector[1] * Hz_field,
             src_vol,
         ),
         Ez() => gen_interpolator_from_array(
-            normal_vector[0] * Hy .- normal_vector[1] * Hx,
+            normal_vector[1] * Hy_field .- normal_vector[2] * Hx_field,
             src_vol,
         ),
-        # Magnetic current K = - nHat x E
+        # Magnetic current M̂ = -n̂×Ê
         Hx() => gen_interpolator_from_array(
-            normal_vector[2] * Ey .- normal_vector[1] * Ez,
+            normal_vector[3] * Ey_field .- normal_vector[2] * Ez_field,
             src_vol,
         ),
         Hy() => gen_interpolator_from_array(
-            normal_vector[0] * Ez .- normal_vector[2] * Ex,
+            normal_vector[1] * Ez_field .- normal_vector[3] * Ex_field,
             src_vol,
         ),
         Hz() => gen_interpolator_from_array(
-            normal_vector[1] * Ex .- normal_vector[0] * Ey,
+            normal_vector[2] * Ex_field .- normal_vector[1] * Ey_field,
             src_vol,
         ),
     )
 
-    # Only create current sources we really need
-    for component in required_field_components
-        if (iszero(current_sources[component]) || !(component in transverse_fields))
-            delete!(current_sources, component)
-        end
-    end
+    transverse_components =
+        get_plane_transverse_fields(Volume(center = center, size = size))
+    # Filter current_sources based on transverse_components
+    filtered_current_sources = filter(kv -> kv[1] in transverse_components, current_sources)
 
     return EquivalentSourceData(
         time_profile = time_profile,
         center = center,
         size = size,
         amplitude = amplitude,
-        source_profile = current_sources,
+        source_profile = filtered_current_sources,
+        fields = fields,
     )
+end
+
+@with_kw struct EquivalentSourceData <: Source
+    time_profile::TimeSource
+    center::AbstractVector = [0.0, 0.0, 0.0]
+    size::AbstractVector = [0.0, 0.0, 0.0]
+    amplitude::Number = 1.0
+    source_profile::Dict{<:Field,<:Function}
+    fields::Dict{<:Field,<:AbstractArray}
 end
 
 function get_source_components(source::EquivalentSourceData)
@@ -279,21 +279,6 @@ end
 # ---------------------------------------------------------- #
 # Planewave source
 # ---------------------------------------------------------- #
-
-@with_kw struct PlaneWaveSourceData <: Source
-    time_profile::TimeSource
-    center::AbstractVector{<:Real} = [0.0, 0.0, 0.0]
-    size::AbstractVector{<:Real} = [0.0, 0.0, 0.0]
-    amplitude::Number = 1.0
-    ε::Number = 1.0
-    μ::Number = 1.0
-    polarization::AbstractVector{<:Number}
-    k_vector::AbstractVector{<:Real}
-    k::Number
-    normal_direction::AbstractVector{<:Real}
-end
-
-
 """
     PlaneWaveSource(;
     time_profile::TimeSource,
@@ -385,6 +370,19 @@ function PlaneWaveSource(;
     )
 end
 
+@with_kw struct PlaneWaveSourceData <: Source
+    time_profile::TimeSource
+    center::AbstractVector{<:Real} = [0.0, 0.0, 0.0]
+    size::AbstractVector{<:Real} = [0.0, 0.0, 0.0]
+    amplitude::Number = 1.0
+    ε::Number = 1.0
+    μ::Number = 1.0
+    polarization::AbstractVector{<:Number}
+    k_vector::AbstractVector{<:Real}
+    k::Number
+    normal_direction::AbstractVector{<:Real}
+end
+
 """
     get_planewave_polarization_scaling(
     source::PlaneWaveSourceData, 
@@ -457,10 +455,49 @@ end
 # Mode source
 # ---------------------------------------------------------- #
 
-#TODO
+function ModeSource(;
+    frequency::Number,
+    time_profile::TimeSource,
+    mode_solver_resolution::Int,
+    mode_index::Int,
+    center::Vector{<:Real},
+    size::Vector{<:Real},
+    solver_tolerance::Number,
+    amplitude::Number = 1.0,
+    geometry::Vector{Object},
+    boundary_conditions = (1, 1, 1, 1),
+)::EquivalentSourceData
 
-@with_kw struct ModeSourceData{N<:Number} <: Source
-    amplitude::N = 1.0
+    # Compute the relevant mode profiles    
+    mode_data = get_mode_profiles(;
+        frequency = frequency,
+        mode_solver_resolution = mode_solver_resolution,
+        mode_index = mode_index,
+        center = center,
+        size = size,
+        solver_tolerance = solver_tolerance,
+        geometry = geometry,
+        boundary_conditions = boundary_conditions,
+    )
+
+    # Prepare all of the fields at the monitor
+    fields = Dict(
+        Ex() => mode_data.Ex,
+        Ey() => mode_data.Ey,
+        Ez() => mode_data.Ez,
+        Hx() => mode_data.Hx,
+        Hy() => mode_data.Hy,
+        Hz() => mode_data.Hz,
+    )
+
+    # Prepare an equivalent source from the fields
+    return EquivalentSource(
+        time_profile = time_profile,
+        fields = fields,
+        center = center,
+        size = size,
+        amplitude = amplitude,
+    )
 end
 
 # ---------------------------------------------------------- #
@@ -495,7 +532,7 @@ end
     polarization::Vector{<:Number},
 )::GaussianBeamData
 
-TBW
+Generates a Gaussian Beam source.
 """
 function GaussianBeamSource(;
     time_profile::TimeSource,
