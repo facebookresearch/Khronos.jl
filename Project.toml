@@ -14,7 +14,6 @@ JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
 Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
@@ -24,7 +23,7 @@ VectorModesolver = "8c544392-5fd9-4640-bea4-e12b3d59d9d1"
 YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
 
 [compat]
-Makie = "0.19"
+CairoMakie = "0.12"
 julia = "1.8"
 
 [extras]
