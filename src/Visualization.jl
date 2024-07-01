@@ -184,7 +184,7 @@ function plot_timesource(sim::SimulationData, time_source::TimeSource, frequenci
     PSD = PSD / maximum(PSD)
 
     # Set up the plot
-    f = Figure(;size = (800, 400))
+    f = Figure(; size = (800, 400))
     ax1 = Axis(f[1, 1], xlabel = "Time (s)", ylabel = "Source amplitude")
     lines!(ax1, t, real.(src_amplitude), color = :red)
     ax2 = Axis(
