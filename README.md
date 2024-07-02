@@ -27,3 +27,6 @@ Khronos is a GPU-accelerated Maxwell FDTD solver written entirely in Julia.
 - Single GPU only.
 - Only linear materials without any polarizabilities.
 - Uniform gridding.
+
+## License
+Khronos is licensed under the [MIT license](https://github.com/facebookresearch/Khronos.jl/blob/main/LICENSE).
