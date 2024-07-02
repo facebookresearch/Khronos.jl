@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Handle all of the backend loading.
 using CUDA

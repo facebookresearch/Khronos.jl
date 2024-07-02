@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Excitation of a dielectric waveguide using a mode source.
 

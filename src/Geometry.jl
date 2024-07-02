@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Contains all relevant functions for manipulating geometry.
 #

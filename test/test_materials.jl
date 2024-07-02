@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Test the functionality of all the material functions.
 

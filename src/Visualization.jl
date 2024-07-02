@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Functions to visualize the simulation domain, spatial/temporal source
 # profiles, and monitor data.

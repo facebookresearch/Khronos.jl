@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Using DFT monitors, compute the transmission of a planewave in 3D through a
 # simple slab structure. Compare the computed response to the analytic response.

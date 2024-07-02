@@ -1,10 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
-
-"""
-
-TODO
-* `Field` and `Fields` are really confusing...
-"""
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 
 # -------------------------------------------------------- #
 # 

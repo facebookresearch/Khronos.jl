@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Here live the various functions and routines needed to implement a source that
 # is spatially varying. Importantly, all spatially varying sources take as one

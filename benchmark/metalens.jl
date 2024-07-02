@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Metalens as described in https://github.com/flexcompute/metalens/blob/main/Metalens_Optimize.py
 

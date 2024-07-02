@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 
 
 export prepare_simulation!, run, run_until, stop_when_dft_decayed, run_benchmark

@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 
 # test the interpolation and restriction functions inside utils.jl. these are
 # primarily used to create monitor and source regions, where interpolation and

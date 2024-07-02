@@ -1,4 +1,4 @@
-# (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Here lie the core timestepping kernels for the FDTD algorithm. Thanks to
 # multiple dispatch, we can simply focus on the fundamental (most complicated)
