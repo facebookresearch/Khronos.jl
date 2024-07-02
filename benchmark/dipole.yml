@@ -1,0 +1,126 @@
+simple_dipole:
+  NVIDIA A100-SXM4-80GB:
+    CUDA:
+      Float64:
+        - timestep_rate: 1171.2865695086832
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 9404.763282823858
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 74542.75690545407
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 609755.7829281278
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 18532.62636974196
+          resolution: 10.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 152326.27564917377
+          resolution: 20.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 1.1860356824106395e6
+          resolution: 40.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 1.4693758582999355e6
+          resolution: 50.0
+          size_xyz: 10.0
+          tolerance: 1.1
+  NVIDIA H100:
+    CUDA:
+      Float64:
+        - timestep_rate: 809.6135118832187
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 6627.01326338528
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 52962.17147789629
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 423097.38170176087
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 12615.206929740136
+          resolution: 10.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 99849.52239250111
+          resolution: 20.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 829887.6398936498
+          resolution: 40.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 1.5999023497101006e6
+          resolution: 50.0
+          size_xyz: 10.0
+          tolerance: 1.1
+    CPU:
+      Float64:
+        - timestep_rate: 4.343225745907932
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 6.730699475913503
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 9.139710235037738
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 11.187879339541306
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+  Apple M1 Pro:
+    CPU:
+      Float64:
+        - timestep_rate: 5.018273074650973
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 8.46574015218974
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 12.900158421609298
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 17.467649007075426
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+    Metal:
+      Float32:
+        - timestep_rate: 42.92364406224066
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 206.42172524698705
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 225.38386304848032
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 239.35896150300462
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1

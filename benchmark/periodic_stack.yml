@@ -1,0 +1,98 @@
+dielectric_periodic_stack:
+  NVIDIA A100-SXM4-80GB:
+    CUDA:
+      Float64:
+        - timestep_rate: 1209.9099268020047
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 9692.560245531686
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+        - timestep_rate: 80896.69434189708
+          z_scaling: 0.5
+          resolution: 40.0
+          tolerance: 1.1
+        - timestep_rate: 2550.213338400152
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 18446.00281738533
+          z_scaling: 1.0
+          resolution: 20.0
+          tolerance: 1.1
+  NVIDIA H100:
+    CUDA:
+      Float64:
+        - timestep_rate: 829.7952864950418
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 6700.166134185303
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+        - timestep_rate: 54374.93411657467
+          z_scaling: 0.5
+          resolution: 40.0
+          tolerance: 1.1
+        - timestep_rate: 1647.7733199106244
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 13397.657017368736
+          z_scaling: 1.0
+          resolution: 20.0
+          tolerance: 1.1
+    CPU:
+      Float64:
+        - timestep_rate: 4.399947653439544
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 4.395338543730462
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 6.620437976366875
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+  Apple M1 Pro:
+    CPU:
+      Float64:
+        - timestep_rate: 4.787363144797965
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 7.944736326270308
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+        - timestep_rate: 4.824303456483952
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+    Metal:
+      Float32:
+        - timestep_rate: 53.248832013000204
+          z_scaling: 0.5
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 185.59111050269604
+          z_scaling: 0.5
+          resolution: 20.0
+          tolerance: 1.1
+        - timestep_rate: 209.24819236442417
+          z_scaling: 0.5
+          resolution: 40.0
+          tolerance: 1.1
+        - timestep_rate: 99.6487718537569
+          z_scaling: 1.0
+          resolution: 10.0
+          tolerance: 1.1
+        - timestep_rate: 141.17066562327767
+          z_scaling: 1.5
+          resolution: 10.0
+          tolerance: 1.1
