@@ -46,22 +46,29 @@ function build_waveguide_simulation(λ::Number)
     return sim
 end
 
-λ = 1.55
-sim = build_waveguide_simulation(λ)
+function run_waveguide()
+    λ = 1.55
+    sim = build_waveguide_simulation(λ)
+    t_end = 40.0;
+    Khronos.run(sim, until = t_end)
+    return sim
+end
 
-# scene = Khronos.plot2D(
-#     sim,
-#     nothing,
-#     Khronos.Volume([0.0, 0.0, 0.0], [6.0, 2.0, 2.0]);
-#     plot_geometry=true,
-# )
+# --- Run 1: includes JIT compilation ---
+println("=" ^ 60)
+println("RUN 1 (cold — includes JIT compilation)")
+println("=" ^ 60)
+t1 = time()
+sim = run_waveguide()
+println("Run 1 total wall time: $(round(time() - t1, digits=3))s\n")
 
-
-# scene = Khronos.plot_source(sim, sim.sources[1])
-# save("waveguide_source.png", scene)
-
-t_end = 40.0;
-Khronos.run(sim, until = t_end)
+# --- Run 2: fresh sim, JIT already done ---
+println("=" ^ 60)
+println("RUN 2 (warm — JIT already compiled)")
+println("=" ^ 60)
+t2 = time()
+sim = run_waveguide()
+println("Run 2 total wall time: $(round(time() - t2, digits=3))s\n")
 
 scene = Khronos.plot2D(
     sim,
