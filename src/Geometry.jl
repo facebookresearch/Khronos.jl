@@ -47,7 +47,7 @@ end
 # so bounds() and ∈ run without dynamic dispatch inside each call.
 @inline function _check_point_in_shape(p::SVector{N}, shape::Shape{N}) where {N}
     b = bounds(shape)
-    @inbounds for d in 1:N
+    @inbounds for d = 1:N
         (b[1][d] < p[d] < b[2][d]) || return false
     end
     return p ∈ shape
