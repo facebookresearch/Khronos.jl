@@ -177,7 +177,7 @@ function _precompute_coords(sim::SimulationData, gv::GridVolume)
     ys = [origin[2] + (iy + gv_origin[2] - 2) * Δy for iy = 1:gv.Ny]
     pz_base = origin[3] + (gv_origin[3] - 2) * Δz
     zs = Vector{Float64}(undef, gv.Nz)
-    for iz in 1:gv.Nz
+    for iz = 1:gv.Nz
         pz_raw = pz_base + iz * Δz
         zs[iz] = (isinf(pz_raw) || isnan(pz_raw)) ? sim.cell_center[3] : pz_raw
     end
