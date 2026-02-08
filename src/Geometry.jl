@@ -185,9 +185,15 @@ function _precompute_coords(sim::SimulationData, gv::GridVolume)
 end
 
 function _write_geometry_3d!(
-    sim::SimulationData, geometry::Vector{Object}, gv::GridVolume,
-    f::F, perm_arr, σ_arr,
-    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+    sim::SimulationData,
+    geometry::Vector{Object},
+    gv::GridVolume,
+    f::F,
+    perm_arr,
+    σ_arr,
+    xs::Vector{Float64},
+    ys::Vector{Float64},
+    zs::Vector{Float64},
 ) where {F<:Field}
     for iz = 1:gv.Nz, iy = 1:gv.Ny, ix = 1:gv.Nx
         point = SVector(xs[ix], ys[iy], zs[iz])
