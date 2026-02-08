@@ -53,7 +53,11 @@ function build_simulation(λ, waist_radius, resolution)
     return sim
 end
 
-function run_simulation!(sim::Khronos.SimulationData)
+function run_gaussian_beam()
+    λ = 1.0
+    waist_radius = 0.75
+    resolution = 20.0
+    sim = build_simulation(λ, waist_radius, resolution)
     Khronos.run(
         sim,
         until_after_sources = Khronos.stop_when_dft_decayed(
@@ -62,26 +66,30 @@ function run_simulation!(sim::Khronos.SimulationData)
             maximum_runtime = 300.0,
         ),
     )
+    return sim
 end
 
-function plot_source_profile!(sim::Khronos.SimulationData)
-    Khronos.prepare_simulation!(sim)
-    Ex = sum(sim.source_data[1].amplitude_data, dims = 3)[:, :, 1]
-    heatmap(Ex)
-end
+# --- Run 1: includes JIT compilation ---
+println("=" ^ 60)
+println("RUN 1 (cold — includes JIT compilation)")
+println("=" ^ 60)
+t1 = time()
+sim = run_gaussian_beam()
+println("Run 1 total wall time: $(round(time() - t1, digits=3))s\n")
 
+# --- Run 2: fresh sim, JIT already done ---
+println("=" ^ 60)
+println("RUN 2 (warm — JIT already compiled)")
+println("=" ^ 60)
+t2 = time()
+sim = run_gaussian_beam()
+println("Run 2 total wall time: $(round(time() - t2, digits=3))s\n")
+
+# Visualize the source profile
 λ = 1.0
-waist_radius = 0.75
-resolution = 20.0
-
-sim = build_simulation(λ, waist_radius, resolution)
-
-# Visualize the source profile in the time and frequency domains
 frequencies = 0.75:0.005:1.25
 scene = Khronos.plot_timesource(sim, sim.sources[1], frequencies)
 save("sources.png", scene)
-
-run_simulation!(sim)
 
 # Visualize the response of the monitor
 scene = Khronos.plot_monitor(sim.monitors[1], 1)
