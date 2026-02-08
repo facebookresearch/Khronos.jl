@@ -209,9 +209,15 @@ function _write_geometry_3d!(
 end
 
 function _write_geometry_2d!(
-    sim::SimulationData, geometry::Vector{Object}, gv::GridVolume,
-    f::F, perm_arr, σ_arr,
-    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+    sim::SimulationData,
+    geometry::Vector{Object},
+    gv::GridVolume,
+    f::F,
+    perm_arr,
+    σ_arr,
+    xs::Vector{Float64},
+    ys::Vector{Float64},
+    zs::Vector{Float64},
 ) where {F<:Field}
     for iy = 1:gv.Ny, ix = 1:gv.Nx
         point = SVector(xs[ix], ys[iy], zs[1])
