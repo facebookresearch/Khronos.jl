@@ -231,7 +231,11 @@ Non-allocating overload: compute the point in continuous coordinates from
 separate integer indices, returning an `SVector{3,Float64}`.
 """
 @inline function grid_volume_idx_to_point(
-    sim::SimulationData, gv::GridVolume, ix::Int, iy::Int, iz::Int,
+    sim::SimulationData,
+    gv::GridVolume,
+    ix::Int,
+    iy::Int,
+    iz::Int,
 )
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
