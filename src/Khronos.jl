@@ -10,6 +10,7 @@ using Revise
 using Logging
 using LinearAlgebra
 using OffsetArrays
+using StaticArrays
 import VectorModesolver
 
 macro status(exs)

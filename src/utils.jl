@@ -122,13 +122,13 @@ Return a displacement vector to go from a cell origin to that particular compone
 
 Make sure the simulation is prepared first...
 """
-get_yee_shift(sim::SimulationData, ::Center) = [0.0, 0.0, 0.0]
-get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) = [0, -sim.Δy / 2, -sim.Δz / 2]
-get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) = [-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0]
-get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) = [-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0]
-get_yee_shift(sim::SimulationData, ::Union{Bx,Hx,μx}) = [-sim.Δx / 2.0, 0.0, 0.0]
-get_yee_shift(sim::SimulationData, ::Union{By,Hy,μy}) = [0.0, -sim.Δy / 2, 0.0]
-get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = [0.0, 0.0, -sim.Δz / 2.0]
+get_yee_shift(sim::SimulationData, ::Center) = SVector(0.0, 0.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) = SVector(0.0, -sim.Δy / 2, -sim.Δz / 2)
+get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) = SVector(-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0)
+get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) = SVector(-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Bx,Hx,μx}) = SVector(-sim.Δx / 2.0, 0.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{By,Hy,μy}) = SVector(0.0, -sim.Δy / 2, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = SVector(0.0, 0.0, -sim.Δz / 2.0)
 
 """get_component_origin()
 
@@ -141,7 +141,11 @@ voxels are in the domain.
 """
 
 function get_component_origin(sim::SimulationData)
-    return -sim.cell_size / 2 .- sim.cell_center .+ [sim.Δx / 2, sim.Δy / 2, sim.Δz / 2]
+    return SVector(
+        -sim.cell_size[1] / 2 - sim.cell_center[1] + sim.Δx / 2,
+        -sim.cell_size[2] / 2 - sim.cell_center[2] + sim.Δy / 2,
+        -sim.cell_size[3] / 2 - sim.cell_center[3] + sim.Δz / 2,
+    )
 end
 
 function get_component_origin(sim::SimulationData, component::Field)
@@ -208,13 +212,34 @@ function grid_volume_idx_to_point(sim::SimulationData, gv::GridVolume, idx_point
     # we need to compensate by `2`, not just `1` like we ould expect. We should
     # revisit this, as it's prone to errors in the future...
     offset = (idx_point + gv_origin .- 2) .* [sim.Δx, sim.Δy, sim.Δz]
-    point = origin .+ offset
+    point = collect(origin) .+ offset
     # note that if our simulation is 2D, we will get a 0×∞ op, resulting in a
     # NaN. We need to account for that manually (*sigh*). The point we choose to
     # fill it with doesn't actually matter (one might prefer to leave it as NaN)
     # but for usability later, we'll replace it with the simulation center.
     point[3] = (isinf(point[3]) || isnan(point[3])) ? sim.cell_center[3] : point[3]
     return point
+end
+
+"""
+    grid_volume_idx_to_point(sim, gv, ix, iy, iz)
+
+Non-allocating overload: compute the point in continuous coordinates from
+separate integer indices, returning an `SVector{3,Float64}`.
+"""
+@inline function grid_volume_idx_to_point(
+    sim::SimulationData, gv::GridVolume, ix::Int, iy::Int, iz::Int,
+)
+    origin = get_component_origin(sim, gv.component)
+    gv_origin = get_min_corner(gv)
+    Δx = sim.Δx
+    Δy = sim.Δy
+    Δz = sim.Δz
+    px = origin[1] + (ix + gv_origin[1] - 2) * Δx
+    py = origin[2] + (iy + gv_origin[2] - 2) * Δy
+    pz_raw = origin[3] + (iz + gv_origin[3] - 2) * Δz
+    pz = (isinf(pz_raw) || isnan(pz_raw)) ? sim.cell_center[3] : pz_raw
+    return SVector(px, py, pz)
 end
 
 """

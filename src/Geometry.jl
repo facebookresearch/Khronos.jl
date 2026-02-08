@@ -33,6 +33,26 @@ function Base.findfirst(p::Vector{T}, s::Vector{Object}) where {T<:Real}
     return nothing
 end
 
+# Non-allocating SVector overload for the hot path in init_geometry
+function Base.findfirst(p::SVector{N}, s::Vector{Object}) where {N}
+    for i in eachindex(s)
+        if _check_point_in_shape(p, s[i].shape)
+            return i
+        end
+    end
+    return nothing
+end
+
+# Function barrier: Julia specializes on the concrete Shape type at dispatch,
+# so bounds() and ∈ run without dynamic dispatch inside each call.
+@inline function _check_point_in_shape(p::SVector{N}, shape::Shape{N}) where {N}
+    b = bounds(shape)
+    @inbounds for d in 1:N
+        (b[1][d] < p[d] < b[2][d]) || return false
+    end
+    return p ∈ shape
+end
+
 
 """
 For now, let's just assume diagonal materials, so that the inverse is easy to
@@ -145,6 +165,61 @@ function needs_conductivities(geometry::Vector{Object}, f::Field)
     return needs_cond
 end
 
+# ---------------------------------------------------------- #
+# Geometry initialization helpers (module-level for type stability)
+# ---------------------------------------------------------- #
+
+function _precompute_coords(sim::SimulationData, gv::GridVolume)
+    origin = get_component_origin(sim, gv.component)
+    gv_origin = get_min_corner(gv)
+    Δx, Δy, Δz = sim.Δx, sim.Δy, sim.Δz
+    xs = [origin[1] + (ix + gv_origin[1] - 2) * Δx for ix in 1:gv.Nx]
+    ys = [origin[2] + (iy + gv_origin[2] - 2) * Δy for iy in 1:gv.Ny]
+    pz_base = origin[3] + (gv_origin[3] - 2) * Δz
+    zs = Vector{Float64}(undef, gv.Nz)
+    for iz in 1:gv.Nz
+        pz_raw = pz_base + iz * Δz
+        zs[iz] = (isinf(pz_raw) || isnan(pz_raw)) ? sim.cell_center[3] : pz_raw
+    end
+    return xs, ys, zs
+end
+
+function _write_geometry_3d!(
+    sim::SimulationData, geometry::Vector{Object}, gv::GridVolume,
+    f::F, perm_arr, σ_arr,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+) where {F<:Field}
+    for iz = 1:gv.Nz, iy = 1:gv.Ny, ix = 1:gv.Nx
+        point = SVector(xs[ix], ys[iy], zs[iz])
+        index = findfirst(point, geometry)
+        obj = isnothing(index) ? nothing : geometry[index]
+        if !isnothing(perm_arr)
+            @inbounds perm_arr[ix, iy, iz] = get_perm_inv(obj, f)
+        end
+        if !isnothing(σ_arr)
+            @inbounds σ_arr[ix, iy, iz] = get_σ(obj, f)
+        end
+    end
+end
+
+function _write_geometry_2d!(
+    sim::SimulationData, geometry::Vector{Object}, gv::GridVolume,
+    f::F, perm_arr, σ_arr,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+) where {F<:Field}
+    for iy = 1:gv.Ny, ix = 1:gv.Nx
+        point = SVector(xs[ix], ys[iy], zs[1])
+        index = findfirst(point, geometry)
+        obj = isnothing(index) ? nothing : geometry[index]
+        if !isnothing(perm_arr)
+            @inbounds perm_arr[ix, iy] = get_perm_inv(obj, f)
+        end
+        if !isnothing(σ_arr)
+            @inbounds σ_arr[ix, iy] = get_σ(obj, f)
+        end
+    end
+end
+
 # isotropic materials
 function init_geometry(sim::SimulationData, geometry::Vector{Object})
     if length(geometry) == 0
@@ -192,59 +267,36 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         needs_conductivities(geometry, Bz()) ?
         zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
 
-    """
-    there are a lot of ways we could loop over the all the proper points.
-    Ideally, we would do a _single_ loop and just be careful with how we update
-    the different regions of each voxel. That requires some thought (and
-    additional consideration w.r.t. branching) and probably isn't necessary
-    until it really _is_ a performance bottleneck. So we'll just flag this as a
-    potential performance improvement, and do the easy thing for now.
-    TODO: make faster
-    """
+    # Pre-compute 1D coordinate arrays for each component to avoid
+    # per-voxel allocations. Each coordinate is separable:
+    #   coord[i] = origin[d] + (i + gv_origin[d] - 2) * Δ[d]
 
-    # loop over x
-    gv_x = GridVolume(sim, Ex())
-    for iz = 1:gv_x.Nz, iy = 1:gv_x.Ny, ix = 1:gv_x.Nx
-        point = grid_volume_idx_to_point(sim, gv_x, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dx(), idx, ε_inv_x, σDx)
+    # Build per-component data: (GridVolume, field_type, perm_array, σ_array)
+    components = (
+        (GridVolume(sim, Ex()), Dx(), ε_inv_x, σDx),
+        (GridVolume(sim, Hx()), Bx(), μ_inv_x, σBx),
+        (GridVolume(sim, Ey()), Dy(), ε_inv_y, σDy),
+        (GridVolume(sim, Hy()), By(), μ_inv_y, σBy),
+        (GridVolume(sim, Ez()), Dz(), ε_inv_z, σDz),
+        (GridVolume(sim, Hz()), Bz(), μ_inv_z, σBz),
+    )
+
+    # Parallelize the 6 independent component loops via Threads.@spawn.
+    # Each writes to separate arrays and reads from shared immutable geometry.
+    # Gracefully degrades to serial when Threads.nthreads() == 1.
+    tasks = Vector{Task}(undef, length(components))
+    for (ci, (gv, f, perm_arr, σ_arr)) in enumerate(components)
+        xs, ys, zs = _precompute_coords(sim, gv)
+        tasks[ci] = Threads.@spawn begin
+            if sim.ndims == 3
+                _write_geometry_3d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+            else
+                _write_geometry_2d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+            end
+        end
     end
-
-    gv_x = GridVolume(sim, Hx())
-    for iz = 1:gv_x.Nz, iy = 1:gv_x.Ny, ix = 1:gv_x.Nx
-        point = grid_volume_idx_to_point(sim, gv_x, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Bx(), idx, μ_inv_x, σBx)
-    end
-
-    # loop over y
-    gv_y = GridVolume(sim, Ey())
-    for iz = 1:gv_y.Nz, iy = 1:gv_y.Ny, ix = 1:gv_y.Nx
-        point = grid_volume_idx_to_point(sim, gv_y, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dy(), idx, ε_inv_y, σDy)
-    end
-
-    gv_y = GridVolume(sim, Hy())
-    for iz = 1:gv_y.Nz, iy = 1:gv_y.Ny, ix = 1:gv_y.Nx
-        point = grid_volume_idx_to_point(sim, gv_y, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), By(), idx, μ_inv_y, σBy)
-    end
-
-    # loop over z
-    gv_z = GridVolume(sim, Ez())
-    for iz = 1:gv_z.Nz, iy = 1:gv_z.Ny, ix = 1:gv_z.Nx
-        point = grid_volume_idx_to_point(sim, gv_z, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Dz(), idx, ε_inv_z, σDz)
-    end
-
-    gv_z = GridVolume(sim, Hz())
-    for iz = 1:gv_z.Nz, iy = 1:gv_z.Ny, ix = 1:gv_z.Nx
-        point = grid_volume_idx_to_point(sim, gv_z, [ix, iy, iz])
-        idx = [ix, iy, iz][1:sim.ndims]
-        pull_geometry(sim, geometry, findfirst(point, geometry), Bz(), idx, μ_inv_z, σBz)
+    for t in tasks
+        wait(t)
     end
 
 
