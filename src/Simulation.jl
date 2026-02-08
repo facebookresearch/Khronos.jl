@@ -282,10 +282,12 @@ function run_benchmark(sim::SimulationData, until::Int)
     t_tic = time()
     for it = 1:until
         if (it == 10)
+            KernelAbstractions.synchronize(backend_engine)
             t_tic = time()
         end
         step!(sim)
     end
+    KernelAbstractions.synchronize(backend_engine)
 
     time_s = time() - t_tic
     @info("Run complete.")
