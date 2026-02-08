@@ -173,8 +173,8 @@ function _precompute_coords(sim::SimulationData, gv::GridVolume)
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
     Δx, Δy, Δz = sim.Δx, sim.Δy, sim.Δz
-    xs = [origin[1] + (ix + gv_origin[1] - 2) * Δx for ix in 1:gv.Nx]
-    ys = [origin[2] + (iy + gv_origin[2] - 2) * Δy for iy in 1:gv.Ny]
+    xs = [origin[1] + (ix + gv_origin[1] - 2) * Δx for ix = 1:gv.Nx]
+    ys = [origin[2] + (iy + gv_origin[2] - 2) * Δy for iy = 1:gv.Ny]
     pz_base = origin[3] + (gv_origin[3] - 2) * Δz
     zs = Vector{Float64}(undef, gv.Nz)
     for iz in 1:gv.Nz
