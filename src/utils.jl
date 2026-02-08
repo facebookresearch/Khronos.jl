@@ -123,9 +123,12 @@ Return a displacement vector to go from a cell origin to that particular compone
 Make sure the simulation is prepared first...
 """
 get_yee_shift(sim::SimulationData, ::Center) = SVector(0.0, 0.0, 0.0)
-get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) = SVector(0.0, -sim.Δy / 2, -sim.Δz / 2)
-get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) = SVector(-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0)
-get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) = SVector(-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) =
+    SVector(0.0, -sim.Δy / 2, -sim.Δz / 2)
+get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) =
+    SVector(-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0)
+get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) =
+    SVector(-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0)
 get_yee_shift(sim::SimulationData, ::Union{Bx,Hx,μx}) = SVector(-sim.Δx / 2.0, 0.0, 0.0)
 get_yee_shift(sim::SimulationData, ::Union{By,Hy,μy}) = SVector(0.0, -sim.Δy / 2, 0.0)
 get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = SVector(0.0, 0.0, -sim.Δz / 2.0)
