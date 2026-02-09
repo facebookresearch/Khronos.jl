@@ -1461,3 +1461,187 @@ memory savings without sacrificing output accuracy.
 The declarative IR (§1.19) enables non-Julia frontends to target the same
 compiler and engine. This is unique among FDTD solvers and opens the door
 to Python bindings, GUI tools, and config-file-driven workflows.
+
+---
+
+# Performance Optimization
+
+This section tracks GPU kernel performance improvements and remaining
+optimization opportunities in the Engine Backend.
+
+---
+
+## Current Performance (A100 80 GB, Float64)
+
+After the Union type annotation fix (see §P.1), measured throughput on
+an NVIDIA A100 80 GB SXM (2039 GB/s peak memory bandwidth):
+
+| Benchmark | Throughput | Bandwidth | % Peak |
+|-----------|-----------|-----------|--------|
+| `step_B_from_E!` (256³, PML) | — | 1661 GB/s | 81% |
+| `step_D_from_H!` (256³, PML) | — | 1656 GB/s | 81% |
+| `update_H_from_B!` (256³, vacuum) | — | 1365 GB/s | 67% |
+| `update_E_from_D!` (256³, with source) | — | 728 GB/s | 36% |
+| Full `step!` (256³, PML) | 1747 MCells/s | 1258 GB/s | 62% |
+
+Example throughput (all 3D with PML unless noted):
+
+| Example | Grid | MCells/s | Notes |
+|---------|------|----------|-------|
+| `throughput_vs_size` | 256³ | 1828 | Peak throughput benchmark |
+| `bandwidth_analysis` | 256³ | 1845 | CUDA-event-timed, consistent |
+| `throughput_vs_complexity` A (vacuum, no PML) | 128³ | 2965 | Baseline — fastest |
+| `throughput_vs_complexity` B (vacuum + PML) | 128³ | 1617 | +σ field updates |
+| `throughput_vs_complexity` C (dielectric + PML) | 128³ | 1609 | +ε lookup |
+| `throughput_vs_complexity` D (6-layer + PML) | 128³ | 1611 | Same kernel as C |
+| `throughput_vs_complexity` E (dielectric + PML + DFT) | 128³ | 1585 | +DFT accumulation |
+| `sphere` | 256³ | 2432 | Large vacuum region |
+| `planewave` | — | 1690 | Warm steady-state |
+| `fresnel_reflectance` | — | 1530 | Physics validation PASS |
+| `waveguide` | — | 1333 | Mode source + DFT |
+| `gaussian_beam` | — | 1304 | Gaussian beam source |
+| `periodic_slab` | — | 1151 | Periodic + DFT |
+| `precision_comparison` (f64) | — | 1000 | — |
+| `precision_comparison` (f32) | — | 1455 | 1.45× over f64 |
+| `dipole` | 32³ | 174 | Tiny grid, launch-limited |
+| `anisotropic_slab` | — | — | Physics validation PASS |
+
+---
+
+## P.1 Union Type Annotation Removal — Completed
+
+**Impact:** 4.8× throughput improvement (363 → 1747 MCells/s at 256³).
+Memory bandwidth utilization from 13% to 62% of A100 peak.
+
+**Root cause:** The `@kernel` functions `step_curl!` and `update_field!`
+in `Timestep.jl` had `::Union{AbstractArray,Nothing}` type annotations
+on all parameters. This told GPUCompiler to compile a single generic
+kernel handling all Union variants with runtime dispatch, instead of
+specializing a concrete kernel per call-site type signature.
+
+**Fix:** Removed all Union type annotations from `step_curl!` and
+`update_field!` `@kernel` signatures (parameters are now untyped). Added
+`@inline` to all helper functions (`generic_curl!`, `update_field_generic`,
+`scale_by_half`, `get_σ`, `get_σD`, `get_m_inv`) to ensure the GPU
+compiler inlines through the dispatch chain.
+
+**Composability preserved:** The `Fields` struct still uses
+`Union{T,Nothing}` for conditional field allocation — only the fields
+required by the active physics are allocated. KernelAbstractions
+specializes a separate GPU kernel for each unique combination of concrete
+argument types at the call site. The `Nothing`-dispatch composability
+pattern works *because of* type removal, not despite it.
+
+---
+
+## P.2 Cache Kernel Objects — Open
+
+**Priority:** P1
+**Estimated impact:** ~4% overhead reduction per timestep.
+
+**Problem:** `step_curl!(backend_engine)` and `update_field!(backend_engine)`
+create a new KernelAbstractions kernel wrapper object on every call. This
+involves looking up the non-`const` module-level global `backend_engine`,
+dynamic dispatch on its type, and constructing the kernel closure.
+
+**Fix:** Cache the kernel objects after `prepare_simulation!`. Store
+pre-built kernel closures (one per unique type signature) in a field on
+`SimulationData` or a module-level cache keyed by type. Alternatively,
+declare `backend_engine` as `const` and let the compiler constant-fold
+the kernel construction.
+
+---
+
+## P.3 Reset Source Arrays After Shutoff — Open
+
+**Priority:** P1
+**Estimated impact:** Up to 1.88× speedup for `update_field!` kernels
+after pulsed sources terminate.
+
+**Problem:** When a pulsed source (e.g., `GaussianPulseSource`) turns off,
+its source contribution array (`fSDz`, etc.) remains allocated as an
+`OffsetArray` filled with zeros. The `update_field!` kernel continues
+executing the slow path with asymmetric types (`Sx=Nothing, Sy=Nothing,
+Sz=OffsetArray`), increasing register pressure and reducing bandwidth
+utilization from 67% to 36% of peak.
+
+**Root cause:** The `Fields` struct is immutable (`@with_kw struct`), so
+`fSDz` cannot be set to `nothing` after source termination.
+
+**Fix options:**
+1. Make `Fields` a `mutable struct` (simplest, minor allocation overhead).
+2. Reconstruct the `Fields` struct with source arrays set to `nothing`
+   after `last_source_time(sim)`.
+3. Add a `source_active::Bool` flag and pass `nothing` to the kernel
+   when sources are inactive (cleanest, no struct change).
+
+---
+
+## P.4 Float64 Contamination in Time Sources — Open
+
+**Priority:** P2
+**Estimated impact:** Float32 speedup from 1.45× to ~2× over Float64.
+
+**Problem:** `eval_time_source` for `GaussianPulseData` uses Julia
+literals `pi`, `im`, and `exp` which produce `ComplexF64` regardless of
+the simulation precision type. When the simulation runs in Float32, every
+source evaluation promotes to Float64 and back.
+
+**Fix:** Parameterize the time source evaluation on the simulation's
+number type `N`:
+```julia
+eval_time_source(src::GaussianPulseData, t, N::Type) = ...
+    T = real(N)
+    ω = T(2) * T(π) * T(src.fcen)
+    ...
+```
+
+---
+
+## P.5 OffsetArray Indexing Overhead — Open
+
+**Priority:** P2
+**Estimated impact:** ~7% overhead per array access on GPU.
+
+**Problem:** PML auxiliary fields use `OffsetArrays` with offset indices.
+Each `A[i, j, k]` access on GPU incurs 3 extra integer subtractions
+(`i - offset_i`, etc.) that the GPU compiler does not fold away.
+
+**Fix options:**
+1. Use raw `CuArray` with manual index arithmetic in the kernel.
+2. Pre-subtract offsets and store as a kernel parameter.
+3. Replace `OffsetArray` with a thin wrapper that stores the offset as a
+   compile-time constant (`Val{N}`) so the GPU compiler can fold it.
+
+---
+
+## P.6 128³ L2 Cache Performance Dip — Open
+
+**Priority:** P3
+**Estimated impact:** Localized to 128³ grid size.
+
+**Problem:** At 128³ (130³ with ghost cells), the working set falls in a
+pathological middle ground between L2 cache reuse and full GPU memory
+bandwidth saturation. Power-of-2 alignment may also cause cache bank
+conflicts.
+
+**Fix:** Investigate workgroup size tuning and grid padding for this
+specific size. Low priority since production workloads are typically
+larger.
+
+---
+
+## P.7 Cold-Start JIT Compilation — Open
+
+**Priority:** P3
+**Estimated impact:** `prepare_simulation!` takes ~25s on first call.
+
+**Problem:** The `Fields{T}` constructor with 30+ `Union{T,Nothing}`
+fields triggers extensive JIT compilation. Subsequent calls are fast due
+to method caching.
+
+**Fix options:**
+1. `PrecompileTools.jl` workload that exercises the common field
+   configurations during package precompilation.
+2. Reduce the number of Union fields by grouping auxiliary arrays into
+   sub-structs (e.g., `PMLFields`, `SourceFields`).
