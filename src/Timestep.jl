@@ -180,29 +180,14 @@ function update_E_from_D!(sim::SimulationData)
 end
 
 @kernel function step_curl!(
-    Ax::Union{AbstractArray,Nothing},
-    Ay::Union{AbstractArray,Nothing},
-    Az::Union{AbstractArray,Nothing},
-    Tx::Union{AbstractArray,Nothing},
-    Ty::Union{AbstractArray,Nothing},
-    Tz::Union{AbstractArray,Nothing},
-    Cx::Union{AbstractArray,Nothing},
-    Cy::Union{AbstractArray,Nothing},
-    Cz::Union{AbstractArray,Nothing},
-    Ux::Union{AbstractArray,Nothing},
-    Uy::Union{AbstractArray,Nothing},
-    Uz::Union{AbstractArray,Nothing},
-    σDx::Union{AbstractArray,Nothing},
-    σDy::Union{AbstractArray,Nothing},
-    σDz::Union{AbstractArray,Nothing},
-    σx::Union{AbstractArray,Nothing},
-    σy::Union{AbstractArray,Nothing},
-    σz::Union{AbstractArray,Nothing},
-    Δt::Number,
-    Δx::Number,
-    Δy::Number,
-    Δz::Number,
-    idx_curl::Int,
+    Ax, Ay, Az,
+    Tx, Ty, Tz,
+    Cx, Cy, Cz,
+    Ux, Uy, Uz,
+    σDx, σDy, σDz,
+    σx, σy, σz,
+    Δt, Δx, Δy, Δz,
+    idx_curl,
 )
     ix, iy, iz = @index(Global, NTuple)
     idx_array = CartesianIndex(ix, iy, iz)
@@ -289,7 +274,7 @@ end
     generic_curl!()
 
 """
-function generic_curl!(K, C, U, T, σD, σ_next, σ_prev, idx_array)
+@inline function generic_curl!(K, C, U, T, σD, σ_next, σ_prev, idx_array)
     #  ----------------- Most general case ----------------- #
     C_old = C[idx_array]
     C[idx_array] = update_field_from_curl(C[idx_array], K, nothing, σD)
@@ -299,19 +284,19 @@ function generic_curl!(K, C, U, T, σD, σ_next, σ_prev, idx_array)
     return
 end
 
-function generic_curl!(K, C, U::Nothing, T, σD, σ_next::Nothing, σ_prev, idx_array)
+@inline function generic_curl!(K, C, U::Nothing, T, σD, σ_next::Nothing, σ_prev, idx_array)
     C_old = C[idx_array]
     C[idx_array] = update_field_from_curl(C[idx_array], K, nothing, σD)
     T[idx_array] = update_field_from_curl(T[idx_array], C[idx_array], C_old, σ_prev)
     return
 end
 
-function generic_curl!(K, C, U::Nothing, T, σD, σ_next::AbstractArray, σ_prev, idx_array)
+@inline function generic_curl!(K, C, U::Nothing, T, σD, σ_next::AbstractArray, σ_prev, idx_array)
     error("Invalid setup of U fields...")
     return
 end
 
-function generic_curl!(
+@inline function generic_curl!(
     K::Real,
     C::Nothing,
     U::AbstractArray,
@@ -327,7 +312,7 @@ function generic_curl!(
     return
 end
 
-function generic_curl!(
+@inline function generic_curl!(
     K::Real,
     C::Nothing,
     U::Nothing,
@@ -341,7 +326,7 @@ function generic_curl!(
     return
 end
 
-function generic_curl!(
+@inline function generic_curl!(
     K::Real,
     C::Nothing,
     U::Nothing,
@@ -355,7 +340,7 @@ function generic_curl!(
     return
 end
 
-function generic_curl!(
+@inline function generic_curl!(
     K::Real,
     C::Nothing,
     U::Nothing,
@@ -369,7 +354,7 @@ function generic_curl!(
     return
 end
 
-function generic_curl!(
+@inline function generic_curl!(
     K::Real,
     C::Nothing,
     U::Nothing,
@@ -384,13 +369,13 @@ function generic_curl!(
 end
 
 # type stability
-scale_by_half(x::Float64) = 0.5 * x
-scale_by_half(x::Float32) = 0.5f0 * x
+@inline scale_by_half(x::Float64) = 0.5 * x
+@inline scale_by_half(x::Float32) = 0.5f0 * x
 
-get_σ(σ::Nothing, idx_array) = nothing
-get_σ(σ, idx_array) = σ[2*idx_array-1]
-get_σD(σD::Nothing, idx_array, Δt) = nothing
-get_σD(σD, idx_array, Δt) = scale_by_half(Δt * σD[idx_array])
+@inline get_σ(σ::Nothing, idx_array) = nothing
+@inline get_σ(σ, idx_array) = σ[2*idx_array-1]
+@inline get_σD(σD::Nothing, idx_array, Δt) = nothing
+@inline get_σD(σD, idx_array, Δt) = scale_by_half(Δt * σD[idx_array])
 
 @inline d_dx!(A, Δx, idx_curl, ix, iy, iz) =
     inv(Δx) * (A[ix+idx_curl, iy, iz] - A[ix, iy, iz])
@@ -429,7 +414,7 @@ end
     return
 end
 
-function update_field_generic(A, T, W, P, S, m_inv, σ, idx_array)
+@inline function update_field_generic(A, T, W, P, S, m_inv, σ, idx_array)
     #  ----------------- Most general case ----------------- #
     W_old = W[idx_array] # cache
     net_field = T[idx_array]
@@ -440,7 +425,7 @@ function update_field_generic(A, T, W, P, S, m_inv, σ, idx_array)
     A[idx_array] = A[idx_array] + (1 + σ) * W[idx_array] - (1 - σ) * W_old
 end
 
-function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ::Nothing, idx_array)
+@inline function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ::Nothing, idx_array)
     net_field = T[idx_array]
     net_field += update_cache(S, idx_array)
     net_field += update_cache(P, idx_array)
@@ -448,43 +433,28 @@ function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ::Nothing, idx_ar
     A[idx_array] = m_inv * net_field
 end
 
-function update_field_generic(A, T, W, P, S, m_inv, σ::Nothing, idx_array)
+@inline function update_field_generic(A, T, W, P, S, m_inv, σ::Nothing, idx_array)
     error("W fields initialized when they don't need to be...")
 end
 
-function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ, idx_array)
+@inline function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ, idx_array)
     error("W fields not properly initialized...")
 end
 
-get_m_inv(m_inv::Nothing, m_inv_x::AbstractArray, idx_array) = m_inv_x[idx_array]
-get_m_inv(m_inv::Real, m_inv_x::Nothing, idx_array) = m_inv
-function get_m_inv(m_inv, m_inv_x, idx_array)
+@inline get_m_inv(m_inv::Nothing, m_inv_x::AbstractArray, idx_array) = m_inv_x[idx_array]
+@inline get_m_inv(m_inv::Real, m_inv_x::Nothing, idx_array) = m_inv
+@inline function get_m_inv(m_inv, m_inv_x, idx_array)
     error("Failed to properly specialize m_inv")
 end
 
 @kernel function update_field!(
-    Ax::Union{AbstractArray,Nothing},
-    Ay::Union{AbstractArray,Nothing},
-    Az::Union{AbstractArray,Nothing},
-    Tx::Union{AbstractArray,Nothing},
-    Ty::Union{AbstractArray,Nothing},
-    Tz::Union{AbstractArray,Nothing},
-    Wx::Union{AbstractArray,Nothing},
-    Wy::Union{AbstractArray,Nothing},
-    Wz::Union{AbstractArray,Nothing},
-    Px::Union{AbstractArray,Nothing},
-    Py::Union{AbstractArray,Nothing},
-    Pz::Union{AbstractArray,Nothing},
-    Sx::Union{AbstractArray,Nothing},
-    Sy::Union{AbstractArray,Nothing},
-    Sz::Union{AbstractArray,Nothing},
-    m_inv::Union{Number,Nothing},
-    m_inv_x::Union{AbstractArray,Nothing},
-    m_inv_y::Union{AbstractArray,Nothing},
-    m_inv_z::Union{AbstractArray,Nothing},
-    σx::Union{AbstractArray,Nothing},
-    σy::Union{AbstractArray,Nothing},
-    σz::Union{AbstractArray,Nothing},
+    Ax, Ay, Az,
+    Tx, Ty, Tz,
+    Wx, Wy, Wz,
+    Px, Py, Pz,
+    Sx, Sy, Sz,
+    m_inv, m_inv_x, m_inv_y, m_inv_z,
+    σx, σy, σz,
 )
     ix, iy, iz = @index(Global, NTuple)
     idx_array = CartesianIndex(ix, iy, iz)

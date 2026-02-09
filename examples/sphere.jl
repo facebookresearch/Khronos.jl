@@ -48,11 +48,28 @@ function build_sphere_sim(resolution, radius; include_loss = false)
     return sim, s_xyz
 end
 
-sim, s_xyz = build_sphere_sim(20.0, 1.0; include_loss = true)
+function run_sphere()
+    sim, s_xyz = build_sphere_sim(20.0, 1.0; include_loss = true)
+    t_end = 10.0;
+    Khronos.run(sim, until = t_end)
+    return sim, s_xyz
+end
 
-# Run the simulation until steady state
-t_end = 10.0;
-Khronos.run(sim, until = t_end)
+# --- Run 1: includes JIT compilation ---
+println("=" ^ 60)
+println("RUN 1 (cold — includes JIT compilation)")
+println("=" ^ 60)
+t1 = time()
+sim, s_xyz = run_sphere()
+println("Run 1 total wall time: $(round(time() - t1, digits=3))s\n")
+
+# --- Run 2: fresh sim, JIT already done ---
+println("=" ^ 60)
+println("RUN 2 (warm — JIT already compiled)")
+println("=" ^ 60)
+t2 = time()
+sim, s_xyz = run_sphere()
+println("Run 2 total wall time: $(round(time() - t2, digits=3))s\n")
 
 # Visualize the fields
 scene = Khronos.plot2D(

@@ -48,11 +48,30 @@ function build_simulation(λ, resolution)
     return sim
 end
 
-λ = 1.0
-resolution = 40.0
+function run_planewave()
+    λ = 1.0
+    resolution = 40.0
+    sim = build_simulation(λ, resolution)
+    Khronos.run(sim, until = 60)
+    return sim
+end
 
-sim = build_simulation(λ, resolution)
-Khronos.run(sim, until = 60)
+# --- Run 1: includes JIT compilation ---
+println("=" ^ 60)
+println("RUN 1 (cold — includes JIT compilation)")
+println("=" ^ 60)
+t1 = time()
+sim = run_planewave()
+println("Run 1 total wall time: $(round(time() - t1, digits=3))s\n")
+
+# --- Run 2: fresh sim, JIT already done ---
+println("=" ^ 60)
+println("RUN 2 (warm — JIT already compiled)")
+println("=" ^ 60)
+t2 = time()
+sim = run_planewave()
+println("Run 2 total wall time: $(round(time() - t2, digits=3))s\n")
+
 scene = Khronos.plot2D(
     sim,
     Khronos.Ex(),

@@ -65,25 +65,41 @@ function prepare_simulation!(sim::SimulationData)
         return
     end
 
-    @info("Preparing simulation object...")
+    num_voxels = sim.Nx * sim.Ny * sim.Nz
+    @info("Preparing simulation object ($(sim.Nx)×$(sim.Ny)×$(sim.Nz) = $(num_voxels) voxels)...")
+
+    t_start = time()
 
     # prepare geometry
+    t0 = time()
     init_geometry(sim, sim.geometry)
+    t1 = time()
+    @info("  init_geometry:   $(round(t1-t0, digits=3))s")
 
     # prepare boundaries
     init_boundaries(sim, sim.boundaries)
+    t2 = time()
+    @info("  init_boundaries: $(round(t2-t1, digits=3))s")
 
     # prepare sources
     add_sources(sim, sim.sources)
+    t3 = time()
+    @info("  add_sources:     $(round(t3-t2, digits=3))s")
 
     # determine dimensionality
     get_sim_dims(sim)
 
     # prepare fields
     init_fields(sim, sim.dimensionality)
+    t4 = time()
+    @info("  init_fields:     $(round(t4-t3, digits=3))s")
 
     # prepare time and dft monitors
     init_monitors(sim, sim.monitors)
+    t5 = time()
+    @info("  init_monitors:   $(round(t5-t4, digits=3))s")
+
+    @info("  Total prepare:   $(round(t5-t_start, digits=3))s")
 
     sim.is_prepared = true
 
@@ -119,7 +135,13 @@ function run(
         prepare_simulation!(sim)
     end
 
+    num_voxels = sim.Nx * sim.Ny * sim.Nz
+    step_start = sim.timestep
     @info("Starting simulation...")
+    t_run_start = time()
+    warmup_steps = 50
+    t_after_warmup = nothing
+    steps_at_warmup = 0
     # prepare the step functions
     wait_for_sources = false
     if until isa Function
@@ -141,6 +163,10 @@ function run(
         time_for_sources = last_source_time(sim)
         while round_time(sim) <= time_for_sources
             step!(sim)
+            if isnothing(t_after_warmup) && (sim.timestep - step_start) == warmup_steps
+                t_after_warmup = time()
+                steps_at_warmup = sim.timestep - step_start
+            end
         end
         @info("All sources have terminated...")
     end
@@ -149,6 +175,27 @@ function run(
     # break out of the loop.
     while !(_run_func(sim))
         step!(sim)
+        if isnothing(t_after_warmup) && (sim.timestep - step_start) == warmup_steps
+            t_after_warmup = time()
+            steps_at_warmup = sim.timestep - step_start
+        end
+    end
+
+    t_run_end = time()
+    total_steps = sim.timestep - step_start
+    elapsed = t_run_end - t_run_start
+    if total_steps > 0 && elapsed > 0
+        mcells_per_s = num_voxels * total_steps / elapsed / 1e6
+        if !isnothing(t_after_warmup) && total_steps > steps_at_warmup
+            steady_steps = total_steps - steps_at_warmup
+            steady_elapsed = t_run_end - t_after_warmup
+            steady_rate = num_voxels * steady_steps / steady_elapsed / 1e6
+            @info("Simulation complete: $(total_steps) steps in $(round(elapsed, digits=3))s " *
+                  "($(round(mcells_per_s, digits=1)) MVoxels/s overall, " *
+                  "$(round(steady_rate, digits=1)) MVoxels/s after warmup)")
+        else
+            @info("Simulation complete: $(total_steps) steps in $(round(elapsed, digits=3))s ($(round(mcells_per_s, digits=1)) MVoxels/s)")
+        end
     end
 
     return
@@ -235,10 +282,12 @@ function run_benchmark(sim::SimulationData, until::Int)
     t_tic = time()
     for it = 1:until
         if (it == 10)
+            KernelAbstractions.synchronize(backend_engine)
             t_tic = time()
         end
         step!(sim)
     end
+    KernelAbstractions.synchronize(backend_engine)
 
     time_s = time() - t_tic
     @info("Run complete.")
