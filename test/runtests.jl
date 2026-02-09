@@ -12,5 +12,6 @@ using Test
     include("test_timestep.jl")
     include("test_visualization.jl")
     include("test_volumes.jl")
+    include("test_chunking.jl")
 
 end

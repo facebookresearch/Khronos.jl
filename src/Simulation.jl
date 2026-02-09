@@ -81,10 +81,15 @@ function prepare_simulation!(sim::SimulationData)
     t2 = time()
     @info("  init_boundaries: $(round(t2-t1, digits=3))s")
 
+    # plan domain decomposition into chunks
+    sim.chunk_plan = plan_chunks(sim)
+    t2b = time()
+    @info("  plan_chunks:     $(round(t2b-t2, digits=3))s ($(sim.chunk_plan.total_chunks) chunk(s))")
+
     # prepare sources
     add_sources(sim, sim.sources)
     t3 = time()
-    @info("  add_sources:     $(round(t3-t2, digits=3))s")
+    @info("  add_sources:     $(round(t3-t2b, digits=3))s")
 
     # determine dimensionality
     get_sim_dims(sim)

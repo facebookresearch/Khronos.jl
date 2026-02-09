@@ -300,6 +300,106 @@ end
 # Simulation.jl
 # -------------------------------------------------------- #
 
+# -------------------------------------------------------- #
+# Chunking.jl
+# -------------------------------------------------------- #
+
+"""
+    PhysicsFlags
+
+Captures which physics features are active in a rectangular region.
+Drives which arrays to allocate and which kernel variant compiles.
+"""
+struct PhysicsFlags
+    has_epsilon::Bool
+    has_mu::Bool
+    has_sigma_D::Bool
+    has_sigma_B::Bool
+    has_pml_x::Bool
+    has_pml_y::Bool
+    has_pml_z::Bool
+    has_sources::Bool
+    has_monitors::Bool
+end
+
+function PhysicsFlags(;
+    has_epsilon::Bool = false,
+    has_mu::Bool = false,
+    has_sigma_D::Bool = false,
+    has_sigma_B::Bool = false,
+    has_pml_x::Bool = false,
+    has_pml_y::Bool = false,
+    has_pml_z::Bool = false,
+    has_sources::Bool = false,
+    has_monitors::Bool = false,
+)
+    PhysicsFlags(
+        has_epsilon, has_mu, has_sigma_D, has_sigma_B,
+        has_pml_x, has_pml_y, has_pml_z, has_sources, has_monitors,
+    )
+end
+
+has_any_pml(pf::PhysicsFlags) = pf.has_pml_x || pf.has_pml_y || pf.has_pml_z
+
+"""
+    ChunkSpec
+
+Describes one rectangular chunk of the simulation domain.
+"""
+struct ChunkSpec
+    id::Int
+    volume::Volume
+    grid_volume::GridVolume
+    physics::PhysicsFlags
+    neighbor_ids::Vector{Int}
+    device_id::Int
+end
+
+"""
+    ChunkPlan
+
+Complete decomposition of the simulation domain into chunks.
+"""
+struct ChunkPlan
+    chunks::Vector{ChunkSpec}
+    adjacency::Vector{Tuple{Int,Int,Int}}
+    total_chunks::Int
+end
+
+"""
+    HaloConnection
+
+Describes a ghost cell send/recv pair between two chunks.
+"""
+struct HaloConnection
+    src_chunk_id::Int
+    dst_chunk_id::Int
+    axis::Int
+    src_range::NTuple{3,UnitRange{Int}}
+    dst_range::NTuple{3,UnitRange{Int}}
+end
+
+"""
+    ChunkData
+
+Runtime data per chunk. Parallels Meep's `structure_chunk` + `fields_chunk`.
+"""
+mutable struct ChunkData{N,T,BT}
+    spec::ChunkSpec
+    fields::Fields{BT}
+    geometry_data::GeometryData{N,T}
+    boundary_data::BoundaryData{T}
+    source_data::Vector{SourceData}
+    monitor_data::Vector{MonitorData}
+    halo_send::Vector{HaloConnection}
+    halo_recv::Vector{HaloConnection}
+    halo_send_buffers::Vector{BT}
+    halo_recv_buffers::Vector{BT}
+    ndrange::NTuple{3,Int}
+end
+
+# -------------------------------------------------------- #
+
 function get_Nz(cell_size, resolution)
     if size(cell_size)[1] < 3
         return 0
@@ -353,6 +453,10 @@ end
     geometry_data::Union{GeometryData{N,T},Nothing} = nothing
     monitor_data::Vector{MonitorData} = MonitorData[] # todo figure out parameterizing abstract types
     timestep::Int = 0
+
+    # Chunking support
+    chunk_plan::Union{ChunkPlan,Nothing} = nothing
+    chunk_data::Union{Vector{ChunkData},Nothing} = nothing
 end
 
 # Convenience wrapper
