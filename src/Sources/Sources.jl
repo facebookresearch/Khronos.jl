@@ -20,6 +20,14 @@ get_source_from_field_component(sim::SimulationData, ::Hx) = sim.fields.fSBx
 get_source_from_field_component(sim::SimulationData, ::Hy) = sim.fields.fSBy
 get_source_from_field_component(sim::SimulationData, ::Hz) = sim.fields.fSBz
 
+# Chunk-level source field accessors
+get_source_from_field_component(chunk::ChunkData, ::Ex) = chunk.fields.fSDx
+get_source_from_field_component(chunk::ChunkData, ::Ey) = chunk.fields.fSDy
+get_source_from_field_component(chunk::ChunkData, ::Ez) = chunk.fields.fSDz
+get_source_from_field_component(chunk::ChunkData, ::Hx) = chunk.fields.fSBx
+get_source_from_field_component(chunk::ChunkData, ::Hy) = chunk.fields.fSBy
+get_source_from_field_component(chunk::ChunkData, ::Hz) = chunk.fields.fSBz
+
 # ---------------------------------------------------------- #
 # Source data initialization
 # ---------------------------------------------------------- #
@@ -102,10 +110,61 @@ function step_source!(
     return
 end
 
+"""
+    step_source_chunk!(current_source, chunk, component, t)
+
+Step a source within a specific chunk's field arrays.
+For single-chunk, the offset is global. For multi-chunk, the offset is adjusted
+to chunk-local coordinates.
+"""
+function step_source_chunk!(
+    current_source::SourceData,
+    chunk::ChunkData,
+    component::Union{E,H},
+    t::Real,
+    single_chunk::Bool,
+)
+    if current_source.component isa typeof(component)
+        source_kernel = update_source!(backend_engine)
+
+        current_source_array = get_source_from_field_component(chunk, component)
+        isnothing(current_source_array) && return
+
+        spatial_amplitude = current_source.amplitude_data
+        scalar_amplitude = eval_time_source(current_source.time_src, t)
+
+        if single_chunk
+            # Single chunk: use global offset (field arrays span full domain)
+            offset_index = get_source_offset(current_source.gv)
+        else
+            # Multi-chunk: adjust offset to chunk-local coordinates
+            chunk_start = chunk.spec.grid_volume.start_idx
+            offset_index = (
+                current_source.gv.start_idx[1] - chunk_start[1],
+                current_source.gv.start_idx[2] - chunk_start[2],
+                current_source.gv.start_idx[3] - chunk_start[3],
+            )
+        end
+
+        source_kernel(
+            current_source_array,
+            spatial_amplitude,
+            scalar_amplitude,
+            offset_index...,
+            ndrange = size(spatial_amplitude),
+        )
+    end
+    return
+end
+
 function step_sources!(sim::SimulationData, component::Union{E,H}, t::Real)
-    # Loop through all sources looking for current components
-    if !isnothing(sim.source_data)
-        map((cs) -> step_source!(cs, sim, component, t), sim.source_data)
+    isnothing(sim.chunk_data) && return
+
+    single_chunk = length(sim.chunk_data) == 1
+    for chunk in sim.chunk_data
+        for cs in chunk.source_data
+            step_source_chunk!(cs, chunk, component, t, single_chunk)
+        end
     end
     return
 end

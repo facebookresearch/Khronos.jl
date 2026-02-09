@@ -432,6 +432,7 @@ end
     boundaries::Union{Vector{Vector{N}},Nothing} = nothing
     geometry::Union{Vector{Object},Nothing} = nothing
     monitors::Union{Vector{Monitor},Nothing} = nothing
+    num_chunks::Union{Int,Symbol,Nothing} = nothing  # nothing=single chunk, :auto, or explicit Int
 
     Nx::Union{Int,Nothing} = floor(Int, cell_size[1] * resolution)
     Ny::Union{Int,Nothing} = floor(Int, cell_size[2] * resolution)

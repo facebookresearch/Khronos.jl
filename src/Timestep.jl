@@ -71,7 +71,7 @@ function step_B_from_E!(sim::SimulationData)
         )
     end
 
-    # TODO update halo
+    exchange_halos!(sim, :B)
     return
 end
 
@@ -105,7 +105,7 @@ function update_H_from_B!(sim::SimulationData)
         )
     end
 
-    # TODO update halo
+    exchange_halos!(sim, :H)
     return
 end
 
@@ -141,7 +141,7 @@ function step_D_from_H!(sim::SimulationData)
         )
     end
 
-    # TODO update halo
+    exchange_halos!(sim, :D)
     return
 end
 
@@ -175,7 +175,7 @@ function update_E_from_D!(sim::SimulationData)
         )
     end
 
-    # TODO update halo
+    exchange_halos!(sim, :E)
     return
 end
 
@@ -217,14 +217,14 @@ end
 function update_magnetic_sources!(sim::SimulationData, t::Real)
     map((c) -> step_sources!(sim, c, t), (Hx(), Hy(), Hz()))
 
-    # TODO update halo
+    exchange_halos!(sim, :H)
     return
 end
 
 function update_electric_sources!(sim::SimulationData, t::Real)
     map((c) -> step_sources!(sim, c, t), (Ex(), Ey(), Ez()))
 
-    # TODO update halo
+    exchange_halos!(sim, :E)
     return
 end
 
@@ -235,7 +235,7 @@ function update_H_monitors!(sim::SimulationData, time)
         end
     end
 
-    # TODO update halo
+    # Monitors read local chunk data; no halo exchange needed.
     return
 end
 
@@ -246,7 +246,7 @@ function update_E_monitors!(sim::SimulationData, time)
         end
     end
 
-    # TODO update halo
+    # Monitors read local chunk data; no halo exchange needed.
     return
 end
 

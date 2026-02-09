@@ -291,12 +291,38 @@ function _get_plane_ranges(gv::GridVolume)
 end
 
 function _pull_fields_from_device(sim::SimulationData, component::Field)
-    current_fields = get_fields_from_component(sim, component)
-    array_range = get_component_voxel_count(sim, component)
-    # Index out the ghost cells and collect to the host
-    current_fields = Base.Array(
-        collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]),
-    )
+    if isnothing(sim.chunk_data) || length(sim.chunk_data) == 1
+        # Single chunk: pull directly from sim.fields
+        current_fields = get_fields_from_component(sim, component)
+        array_range = get_component_voxel_count(sim, component)
+        # Index out the ghost cells and collect to the host
+        current_fields = Base.Array(
+            collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]),
+        )
+    else
+        # Multi-chunk: reassemble from chunk-local arrays
+        array_range = get_component_voxel_count(sim, component)
+        current_fields = zeros(array_range...)
+        for chunk in sim.chunk_data
+            chunk_f = _get_chunk_field(chunk, component)
+            isnothing(chunk_f) && continue
+            gv = chunk.spec.grid_volume
+            # Compute the global index range for this chunk
+            # The chunk's grid_volume uses Center() component; compute offset for this component
+            comp_offset = get_component_voxel_count(sim, component) .- [sim.Nx, sim.Ny, sim.Nz]
+            chunk_dims = _get_chunk_component_voxel_count(sim, component, gv)
+            # Map chunk local indices to global indices
+            for iz in 1:chunk_dims[3], iy in 1:chunk_dims[2], ix in 1:chunk_dims[1]
+                gx = ix + gv.start_idx[1] - 1
+                gy = iy + gv.start_idx[2] - 1
+                gz = iz + gv.start_idx[3] - 1
+                if 1 <= gx <= array_range[1] && 1 <= gy <= array_range[2] && 1 <= gz <= array_range[3]
+                    current_fields[gx, gy, gz] = Base.Array(collect([chunk_f[ix, iy, iz]]))[1]
+                end
+            end
+        end
+    end
+    return current_fields
 end
 
 function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
