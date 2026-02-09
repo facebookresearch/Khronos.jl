@@ -42,34 +42,34 @@ get_step_boundaries(sim) = (sim.Nx, sim.Ny, sim.Nz)
 function step_B_from_E!(sim::SimulationData)
     curl_B_kernel = step_curl!(backend_engine)
     idx_curl = 1
-    ndrange = get_step_boundaries(sim)
-    curl_B_kernel(
-        sim.fields.fEx,
-        sim.fields.fEy,
-        sim.fields.fEz,
-        sim.fields.fBx,
-        sim.fields.fBy,
-        sim.fields.fBz,
-        sim.fields.fCBx,
-        sim.fields.fCBy,
-        sim.fields.fCBz,
-        sim.fields.fUBx,
-        sim.fields.fUBy,
-        sim.fields.fUBz,
-        sim.geometry_data.σBx,
-        sim.geometry_data.σBy,
-        sim.geometry_data.σBz,
-        sim.boundary_data.σBx,
-        sim.boundary_data.σBy,
-        sim.boundary_data.σBz,
-        sim.Δt,
-        sim.Δx,
-        sim.Δy,
-        sim.Δz,
-        idx_curl,
-        ndrange = ndrange,
-    )
-
+    for chunk in sim.chunk_data
+        curl_B_kernel(
+            chunk.fields.fEx,
+            chunk.fields.fEy,
+            chunk.fields.fEz,
+            chunk.fields.fBx,
+            chunk.fields.fBy,
+            chunk.fields.fBz,
+            chunk.fields.fCBx,
+            chunk.fields.fCBy,
+            chunk.fields.fCBz,
+            chunk.fields.fUBx,
+            chunk.fields.fUBy,
+            chunk.fields.fUBz,
+            chunk.geometry_data.σBx,
+            chunk.geometry_data.σBy,
+            chunk.geometry_data.σBz,
+            chunk.boundary_data.σBx,
+            chunk.boundary_data.σBy,
+            chunk.boundary_data.σBz,
+            sim.Δt,
+            sim.Δx,
+            sim.Δy,
+            sim.Δz,
+            idx_curl,
+            ndrange = chunk.ndrange,
+        )
+    end
 
     # TODO update halo
     return
@@ -77,33 +77,33 @@ end
 
 function update_H_from_B!(sim::SimulationData)
     update_H_kernel = update_field!(backend_engine)
-    ndrange = get_step_boundaries(sim)
-    update_H_kernel(
-        sim.fields.fHx,
-        sim.fields.fHy,
-        sim.fields.fHz,
-        sim.fields.fBx,
-        sim.fields.fBy,
-        sim.fields.fBz,
-        sim.fields.fWBx,
-        sim.fields.fWBy,
-        sim.fields.fWBz,
-        sim.fields.fPBx,
-        sim.fields.fPBy,
-        sim.fields.fPBz,
-        sim.fields.fSBx,
-        sim.fields.fSBy,
-        sim.fields.fSBz,
-        sim.geometry_data.μ_inv,
-        sim.geometry_data.μ_inv_x,
-        sim.geometry_data.μ_inv_y,
-        sim.geometry_data.μ_inv_z,
-        sim.boundary_data.σBx,
-        sim.boundary_data.σBy,
-        sim.boundary_data.σBz,
-        ndrange = ndrange,
-    )
-
+    for chunk in sim.chunk_data
+        update_H_kernel(
+            chunk.fields.fHx,
+            chunk.fields.fHy,
+            chunk.fields.fHz,
+            chunk.fields.fBx,
+            chunk.fields.fBy,
+            chunk.fields.fBz,
+            chunk.fields.fWBx,
+            chunk.fields.fWBy,
+            chunk.fields.fWBz,
+            chunk.fields.fPBx,
+            chunk.fields.fPBy,
+            chunk.fields.fPBz,
+            chunk.fields.fSBx,
+            chunk.fields.fSBy,
+            chunk.fields.fSBz,
+            chunk.geometry_data.μ_inv,
+            chunk.geometry_data.μ_inv_x,
+            chunk.geometry_data.μ_inv_y,
+            chunk.geometry_data.μ_inv_z,
+            chunk.boundary_data.σBx,
+            chunk.boundary_data.σBy,
+            chunk.boundary_data.σBz,
+            ndrange = chunk.ndrange,
+        )
+    end
 
     # TODO update halo
     return
@@ -112,34 +112,34 @@ end
 function step_D_from_H!(sim::SimulationData)
     curl_D_kernel = step_curl!(backend_engine)
     idx_curl = -1
-    ndrange = get_step_boundaries(sim)
-    curl_D_kernel(
-        sim.fields.fHx,
-        sim.fields.fHy,
-        sim.fields.fHz,
-        sim.fields.fDx,
-        sim.fields.fDy,
-        sim.fields.fDz,
-        sim.fields.fCDx,
-        sim.fields.fCDy,
-        sim.fields.fCDz,
-        sim.fields.fUDx,
-        sim.fields.fUDy,
-        sim.fields.fUDz,
-        sim.geometry_data.σDx,
-        sim.geometry_data.σDy,
-        sim.geometry_data.σDz,
-        sim.boundary_data.σDx,
-        sim.boundary_data.σDy,
-        sim.boundary_data.σDz,
-        sim.Δt,
-        sim.Δx,
-        sim.Δy,
-        sim.Δz,
-        idx_curl,
-        ndrange = ndrange,
-    )
-
+    for chunk in sim.chunk_data
+        curl_D_kernel(
+            chunk.fields.fHx,
+            chunk.fields.fHy,
+            chunk.fields.fHz,
+            chunk.fields.fDx,
+            chunk.fields.fDy,
+            chunk.fields.fDz,
+            chunk.fields.fCDx,
+            chunk.fields.fCDy,
+            chunk.fields.fCDz,
+            chunk.fields.fUDx,
+            chunk.fields.fUDy,
+            chunk.fields.fUDz,
+            chunk.geometry_data.σDx,
+            chunk.geometry_data.σDy,
+            chunk.geometry_data.σDz,
+            chunk.boundary_data.σDx,
+            chunk.boundary_data.σDy,
+            chunk.boundary_data.σDz,
+            sim.Δt,
+            sim.Δx,
+            sim.Δy,
+            sim.Δz,
+            idx_curl,
+            ndrange = chunk.ndrange,
+        )
+    end
 
     # TODO update halo
     return
@@ -147,33 +147,33 @@ end
 
 function update_E_from_D!(sim::SimulationData)
     update_E_kernel = update_field!(backend_engine)
-    ndrange = get_step_boundaries(sim)
-    update_E_kernel(
-        sim.fields.fEx,
-        sim.fields.fEy,
-        sim.fields.fEz,
-        sim.fields.fDx,
-        sim.fields.fDy,
-        sim.fields.fDz,
-        sim.fields.fWDx,
-        sim.fields.fWDy,
-        sim.fields.fWDz,
-        sim.fields.fPDx,
-        sim.fields.fPDy,
-        sim.fields.fPDz,
-        sim.fields.fSDx,
-        sim.fields.fSDy,
-        sim.fields.fSDz,
-        sim.geometry_data.ε_inv,
-        sim.geometry_data.ε_inv_x,
-        sim.geometry_data.ε_inv_y,
-        sim.geometry_data.ε_inv_z,
-        sim.boundary_data.σDx,
-        sim.boundary_data.σDy,
-        sim.boundary_data.σDz,
-        ndrange = ndrange,
-    )
-
+    for chunk in sim.chunk_data
+        update_E_kernel(
+            chunk.fields.fEx,
+            chunk.fields.fEy,
+            chunk.fields.fEz,
+            chunk.fields.fDx,
+            chunk.fields.fDy,
+            chunk.fields.fDz,
+            chunk.fields.fWDx,
+            chunk.fields.fWDy,
+            chunk.fields.fWDz,
+            chunk.fields.fPDx,
+            chunk.fields.fPDy,
+            chunk.fields.fPDz,
+            chunk.fields.fSDx,
+            chunk.fields.fSDy,
+            chunk.fields.fSDz,
+            chunk.geometry_data.ε_inv,
+            chunk.geometry_data.ε_inv_x,
+            chunk.geometry_data.ε_inv_y,
+            chunk.geometry_data.ε_inv_z,
+            chunk.boundary_data.σDx,
+            chunk.boundary_data.σDy,
+            chunk.boundary_data.σDz,
+            ndrange = chunk.ndrange,
+        )
+    end
 
     # TODO update halo
     return

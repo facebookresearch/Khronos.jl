@@ -384,17 +384,17 @@ end
 
 Runtime data per chunk. Parallels Meep's `structure_chunk` + `fields_chunk`.
 """
-mutable struct ChunkData{N,T,BT}
+mutable struct ChunkData{N,T,CT,BT}
     spec::ChunkSpec
     fields::Fields{BT}
     geometry_data::GeometryData{N,T}
     boundary_data::BoundaryData{T}
-    source_data::Vector{SourceData}
+    source_data::Vector{SourceData{CT}}
     monitor_data::Vector{MonitorData}
     halo_send::Vector{HaloConnection}
     halo_recv::Vector{HaloConnection}
-    halo_send_buffers::Vector{BT}
-    halo_recv_buffers::Vector{BT}
+    halo_send_buffers::Vector{AbstractArray}
+    halo_recv_buffers::Vector{AbstractArray}
     ndrange::NTuple{3,Int}
 end
 
@@ -456,7 +456,7 @@ end
 
     # Chunking support
     chunk_plan::Union{ChunkPlan,Nothing} = nothing
-    chunk_data::Union{Vector{ChunkData},Nothing} = nothing
+    chunk_data::Union{Vector{ChunkData{N,T,CT,BT}},Nothing} = nothing
 end
 
 # Convenience wrapper

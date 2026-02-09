@@ -234,3 +234,52 @@ function plan_chunks(sim::SimulationData)::ChunkPlan
     spec = ChunkSpec(1, vol, gv, physics, Int[], 0)
     return ChunkPlan([spec], Tuple{Int,Int,Int}[], 1)
 end
+
+# -------------------------------------------------------- #
+# create_all_chunks -- build ChunkData from existing sim data
+# -------------------------------------------------------- #
+
+"""
+    create_all_chunks(sim::SimulationData)
+
+Create ChunkData objects for each chunk in the plan, wrapping the existing
+simulation data. For the single-chunk baseline, the chunk's fields, geometry,
+and boundary data are the same objects as the sim's global data.
+"""
+function create_all_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,BT}
+    chunks = ChunkData{N,T,CT,BT}[]
+    for spec in sim.chunk_plan.chunks
+        ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, spec.grid_volume.Nz)
+        chunk = ChunkData{N,T,CT,BT}(
+            spec,
+            sim.fields,
+            sim.geometry_data,
+            sim.boundary_data,
+            isnothing(sim.source_data) ? SourceData{CT}[] : sim.source_data,
+            sim.monitor_data,
+            HaloConnection[],
+            HaloConnection[],
+            AbstractArray[],
+            AbstractArray[],
+            ndrange,
+        )
+        push!(chunks, chunk)
+    end
+    return chunks
+end
+
+# -------------------------------------------------------- #
+# connect_chunks! -- set up halo connections between chunks
+# -------------------------------------------------------- #
+
+"""
+    connect_chunks!(sim::SimulationData)
+
+Build halo connections between adjacent chunks. No-op for single-chunk plans.
+"""
+function connect_chunks!(sim::SimulationData)
+    isnothing(sim.chunk_data) && return
+    length(sim.chunk_data) <= 1 && return
+    # Multi-chunk halo connections will be implemented in Phase 3
+    return
+end

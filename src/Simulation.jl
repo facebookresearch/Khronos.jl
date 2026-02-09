@@ -104,7 +104,13 @@ function prepare_simulation!(sim::SimulationData)
     t5 = time()
     @info("  init_monitors:   $(round(t5-t4, digits=3))s")
 
-    @info("  Total prepare:   $(round(t5-t_start, digits=3))s")
+    # create per-chunk runtime data wrapping the initialized arrays
+    sim.chunk_data = create_all_chunks(sim)
+    connect_chunks!(sim)
+    t6 = time()
+    @info("  create_chunks:   $(round(t6-t5, digits=3))s")
+
+    @info("  Total prepare:   $(round(t6-t_start, digits=3))s")
 
     sim.is_prepared = true
 
