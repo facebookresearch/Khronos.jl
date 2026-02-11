@@ -138,16 +138,20 @@ function _pml_overlaps_chunk_axis(sim::SimulationData, chunk_gv::GridVolume, axi
 end
 
 """
-    classify_region_physics(sim, vol, geometry, boundaries)
+    classify_region_physics(sim, vol, geometry, boundaries; chunk_gv=nothing)
 
 Determine `PhysicsFlags` for a rectangular sub-domain.
 Uses bounding-box intersection for O(num_objects) fast rejection.
+
+If `chunk_gv` is provided, it is used directly for PML overlap checks
+instead of converting the volume to grid indices (avoiding float roundtrip errors).
 """
 function classify_region_physics(
     sim::SimulationData,
     vol::Volume,
     geometry::Union{Vector{Object},Nothing},
-    boundaries::Union{Vector{Vector{T}},Nothing},
+    boundaries::Union{Vector{Vector{T}},Nothing};
+    chunk_gv::Union{GridVolume,Nothing} = nothing,
 ) where {T}
     has_epsilon = false
     has_mu = false
@@ -176,11 +180,11 @@ function classify_region_physics(
         end
     end
 
-    # Check PML overlap
-    chunk_gv = GridVolume(sim, vol, Center())
-    has_pml_x = _pml_overlaps_chunk_axis(sim, chunk_gv, 1)
-    has_pml_y = _pml_overlaps_chunk_axis(sim, chunk_gv, 2)
-    has_pml_z = (sim.ndims == 3) ? _pml_overlaps_chunk_axis(sim, chunk_gv, 3) : false
+    # Check PML overlap (use provided GridVolume or compute from Volume)
+    pml_gv = isnothing(chunk_gv) ? GridVolume(sim, vol, Center()) : chunk_gv
+    has_pml_x = _pml_overlaps_chunk_axis(sim, pml_gv, 1)
+    has_pml_y = _pml_overlaps_chunk_axis(sim, pml_gv, 2)
+    has_pml_z = (sim.ndims == 3) ? _pml_overlaps_chunk_axis(sim, pml_gv, 3) : false
 
     # Check sources
     has_sources = false
@@ -366,9 +370,6 @@ function _find_best_split(sim::SimulationData, vol::Volume)
         axis_weight = (axis == argmax(vol.size[1:ndims])) ? 0.7 : 1.0
 
         for frac in candidates
-            # Skip splits too close to edges
-            (frac < 0.1 || frac > 0.9) && continue
-
             left_vol, right_vol = _split_volume(vol, axis, frac)
             left_voxels = _volume_voxels(sim, left_vol)
             right_voxels = _volume_voxels(sim, right_vol)
@@ -541,6 +542,117 @@ function _compute_adjacency(chunks::Vector{ChunkSpec}, sim::SimulationData)
 end
 
 # -------------------------------------------------------- #
+# PML grid splitting (Meep-style)
+# -------------------------------------------------------- #
+
+"""
+    _pml_grid_regions(sim::SimulationData)
+
+Compute PML boundary grid indices and generate up to 3^ndims regions by taking
+the Cartesian product of per-axis intervals:
+  [1, pml_left_end], [pml_left_end+1, pml_right_start-1], [pml_right_start, N]
+
+Follows Meep's `add_to_effort_volumes` approach: splits the domain at PML
+boundaries first, producing isotropic regions where each has uniform per-direction
+PML characteristics.
+
+Returns Vector of (start_idx::Vector{Int}, end_idx::Vector{Int}) tuples.
+"""
+function _pml_grid_regions(sim::SimulationData)
+    ndims = sim.ndims
+    Δ = [sim.Δx, sim.Δy, sim.Δz]
+    N_grid = [sim.Nx, sim.Ny, max(sim.Nz, 1)]
+
+    # For each axis, compute the intervals
+    # intervals[axis] is a Vector of (start, end) tuples
+    intervals = Vector{Vector{Tuple{Int,Int}}}(undef, ndims)
+
+    for axis in 1:ndims
+        axis_intervals = Tuple{Int,Int}[]
+
+        if !isnothing(sim.boundaries) && length(sim.boundaries) >= axis
+            pml_left = sim.boundaries[axis][1]
+            pml_right = sim.boundaries[axis][2]
+        else
+            pml_left = 0.0
+            pml_right = 0.0
+        end
+
+        pml_left_end = (pml_left > 0.0) ? ceil(Int, pml_left / Δ[axis]) : 0
+        pml_right_start = (pml_right > 0.0) ? N_grid[axis] - ceil(Int, pml_right / Δ[axis]) + 1 : N_grid[axis] + 1
+
+        # Left PML interval: [1, pml_left_end]
+        if pml_left_end >= 1
+            push!(axis_intervals, (1, pml_left_end))
+        end
+
+        # Interior interval: [pml_left_end+1, pml_right_start-1]
+        interior_start = pml_left_end + 1
+        interior_end = pml_right_start - 1
+        if interior_start <= interior_end
+            push!(axis_intervals, (interior_start, interior_end))
+        end
+
+        # Right PML interval: [pml_right_start, N]
+        if pml_right_start <= N_grid[axis]
+            push!(axis_intervals, (pml_right_start, N_grid[axis]))
+        end
+
+        # Fallback: if no intervals were created (e.g., PML covers entire axis)
+        if isempty(axis_intervals)
+            push!(axis_intervals, (1, N_grid[axis]))
+        end
+
+        intervals[axis] = axis_intervals
+    end
+
+    # Take Cartesian product across axes
+    regions = Tuple{Vector{Int},Vector{Int}}[]
+
+    if ndims == 2
+        for (sx, ex) in intervals[1]
+            for (sy, ey) in intervals[2]
+                push!(regions, ([sx, sy, 1], [ex, ey, max(sim.Nz, 1)]))
+            end
+        end
+    else  # 3D
+        for (sx, ex) in intervals[1]
+            for (sy, ey) in intervals[2]
+                for (sz, ez) in intervals[3]
+                    push!(regions, ([sx, sy, sz], [ex, ey, ez]))
+                end
+            end
+        end
+    end
+
+    return regions
+end
+
+"""
+    _plan_chunks_pml_grid(sim::SimulationData)::ChunkPlan
+
+Build a ChunkPlan from PML grid regions. Each region has uniform per-direction
+PML characteristics, enabling Nothing-dispatch for PML auxiliary fields.
+"""
+function _plan_chunks_pml_grid(sim::SimulationData)::ChunkPlan
+    regions = _pml_grid_regions(sim)
+
+    specs = ChunkSpec[]
+    for (id, (s_idx, e_idx)) in enumerate(regions)
+        vol = _grid_range_to_volume(sim, s_idx, e_idx)
+        Nx = e_idx[1] - s_idx[1] + 1
+        Ny = e_idx[2] - s_idx[2] + 1
+        Nz = e_idx[3] - s_idx[3] + 1
+        gv = GridVolume(Center(), s_idx, e_idx, Nx, Ny, Nz)
+        physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries; chunk_gv = gv)
+        push!(specs, ChunkSpec(id, vol, gv, physics, Int[], 0))
+    end
+
+    adjacency = _compute_adjacency(specs, sim)
+    return ChunkPlan(specs, adjacency, length(specs))
+end
+
+# -------------------------------------------------------- #
 # plan_chunks -- main entry point
 # -------------------------------------------------------- #
 
@@ -550,10 +662,18 @@ end
 Generate a chunk plan for the simulation.
 
 If `sim.num_chunks` is `nothing`, returns a single-chunk plan (backward compat).
-If `:auto`, computes an appropriate number based on domain size and materials.
+If `:auto` with PML boundaries, uses PML grid splitting for isotropic regions.
+If `:auto` without PML, returns a single chunk.
 If an `Int`, uses that number of chunks via BSP splitting.
 """
 function plan_chunks(sim::SimulationData)::ChunkPlan
+    nc = sim.num_chunks
+
+    # :auto with PML -> PML grid split
+    if nc === :auto && !isnothing(sim.boundaries)
+        return _plan_chunks_pml_grid(sim)
+    end
+
     target = _resolve_num_chunks(sim)
 
     if target <= 1
@@ -645,6 +765,25 @@ function _get_chunk_component_voxel_count(sim::SimulationData, component::Field,
 end
 
 """
+    _get_chunk_component_gv(sim, chunk_gv, component)
+
+Construct a component-specific GridVolume for a chunk, directly from the chunk's
+Center grid_volume. This avoids float-to-int roundtrip errors from converting
+physical coordinates back to grid indices.
+"""
+function _get_chunk_component_gv(sim::SimulationData, chunk_gv::GridVolume, component::Field)
+    dims = _get_chunk_component_voxel_count(sim, component, chunk_gv)
+    return GridVolume(
+        component = component,
+        start_idx = copy(chunk_gv.start_idx),
+        end_idx = chunk_gv.start_idx .+ dims .- 1,
+        Nx = dims[1],
+        Ny = dims[2],
+        Nz = dims[3],
+    )
+end
+
+"""
     _initialize_chunk_field_array(sim, component, chunk_gv)
 
 Allocate a field array sized for a chunk, with +2 ghost cells per dimension.
@@ -693,30 +832,30 @@ function _allocate_chunk_fields(sim::SimulationData, spec::ChunkSpec)
     # W fields: need PML in own direction
     needs_w_b(dir) = has_pml[dir]
 
-    fCBx = alloc(Bx(), needs_c_b(1) || _chunk_needs_C(sim, Bx(), spec))
-    fCBy = alloc(By(), needs_c_b(2) || _chunk_needs_C(sim, By(), spec))
-    fCBz = alloc(Bz(), needs_c_b(3) || _chunk_needs_C(sim, Bz(), spec))
-    fUBx = alloc(Bx(), needs_u_b(1) || _chunk_needs_U(sim, Bx(), spec))
-    fUBy = alloc(By(), needs_u_b(2) || _chunk_needs_U(sim, By(), spec))
-    fUBz = alloc(Bz(), needs_u_b(3) || _chunk_needs_U(sim, Bz(), spec))
-    fWBx = alloc(Bx(), needs_w_b(1) || _chunk_needs_W(sim, Bx(), spec))
-    fWBy = alloc(By(), needs_w_b(2) || _chunk_needs_W(sim, By(), spec))
-    fWBz = alloc(Bz(), needs_w_b(3) || _chunk_needs_W(sim, Bz(), spec))
+    fCBx = alloc(Bx(), needs_c_b(1))
+    fCBy = alloc(By(), needs_c_b(2))
+    fCBz = alloc(Bz(), needs_c_b(3))
+    fUBx = alloc(Bx(), needs_u_b(1))
+    fUBy = alloc(By(), needs_u_b(2))
+    fUBz = alloc(Bz(), needs_u_b(3))
+    fWBx = alloc(Bx(), needs_w_b(1))
+    fWBy = alloc(By(), needs_w_b(2))
+    fWBz = alloc(Bz(), needs_w_b(3))
 
     # D auxiliary fields: PML-driven
     needs_c_d(dir) = pf.has_sigma_D && (has_pml[mod1(dir+1,3)] || has_pml[mod1(dir-1,3)])
     needs_u_d(dir) = has_pml[mod1(dir+1,3)]
     needs_w_d(dir) = has_pml[dir]
 
-    fCDx = alloc(Dx(), needs_c_d(1) || _chunk_needs_C(sim, Dx(), spec))
-    fCDy = alloc(Dy(), needs_c_d(2) || _chunk_needs_C(sim, Dy(), spec))
-    fCDz = alloc(Dz(), needs_c_d(3) || _chunk_needs_C(sim, Dz(), spec))
-    fUDx = alloc(Dx(), needs_u_d(1) || _chunk_needs_U(sim, Dx(), spec))
-    fUDy = alloc(Dy(), needs_u_d(2) || _chunk_needs_U(sim, Dy(), spec))
-    fUDz = alloc(Dz(), needs_u_d(3) || _chunk_needs_U(sim, Dz(), spec))
-    fWDx = alloc(Dx(), needs_w_d(1) || _chunk_needs_W(sim, Dx(), spec))
-    fWDy = alloc(Dy(), needs_w_d(2) || _chunk_needs_W(sim, Dy(), spec))
-    fWDz = alloc(Dz(), needs_w_d(3) || _chunk_needs_W(sim, Dz(), spec))
+    fCDx = alloc(Dx(), needs_c_d(1))
+    fCDy = alloc(Dy(), needs_c_d(2))
+    fCDz = alloc(Dz(), needs_c_d(3))
+    fUDx = alloc(Dx(), needs_u_d(1))
+    fUDy = alloc(Dy(), needs_u_d(2))
+    fUDz = alloc(Dz(), needs_u_d(3))
+    fWDx = alloc(Dx(), needs_w_d(1))
+    fWDy = alloc(Dy(), needs_w_d(2))
+    fWDz = alloc(Dz(), needs_w_d(3))
 
     # Source fields
     fSBx = alloc(Hx(), pf.has_sources && Hx() ∈ sim.source_components)
@@ -740,29 +879,6 @@ function _allocate_chunk_fields(sim::SimulationData, spec::ChunkSpec)
         fWDx=fWDx, fWDy=fWDy, fWDz=fWDz,
         fSDx=fSDx, fSDy=fSDy, fSDz=fSDz,
     )
-end
-
-# Chunk-local versions of needs_C/U/W that use global boundary data
-# (for single-chunk or to fall back to global PML info)
-function _chunk_needs_C(sim::SimulationData, f::Field, spec::ChunkSpec)
-    !isnothing(sim.geometry_data) || return false
-    dir = direction_from_field(f)
-    return (
-        !isnothing(get_mat_conductivity_from_field(sim, f)) && (
-            !isnothing(get_pml_conductivity_from_field(sim, f, next_dir(dir))) ||
-            !isnothing(get_pml_conductivity_from_field(sim, f, prev_dir(dir)))
-        )
-    )
-end
-
-function _chunk_needs_U(sim::SimulationData, f::Field, spec::ChunkSpec)
-    dir = direction_from_field(f)
-    return !isnothing(get_pml_conductivity_from_field(sim, f, next_dir(dir)))
-end
-
-function _chunk_needs_W(sim::SimulationData, f::Field, spec::ChunkSpec)
-    dir = direction_from_field(f)
-    return !isnothing(get_pml_conductivity_from_field(sim, f, dir))
 end
 
 # -------------------------------------------------------- #
@@ -805,14 +921,14 @@ function _init_chunk_geometry(sim::SimulationData, spec::ChunkSpec, geometry::Un
     σBz = alloc(Hz(), needs_conductivities(geometry, Bz()))
 
     # Voxelize within chunk bounds
-    # We need to compute coordinates relative to the chunk's position
+    # Use grid-index-derived GridVolumes to avoid float roundtrip errors
     components = (
-        (GridVolume(sim, spec.volume, Ex()), Dx(), ε_inv_x, σDx),
-        (GridVolume(sim, spec.volume, Hx()), Bx(), μ_inv_x, σBx),
-        (GridVolume(sim, spec.volume, Ey()), Dy(), ε_inv_y, σDy),
-        (GridVolume(sim, spec.volume, Hy()), By(), μ_inv_y, σBy),
-        (GridVolume(sim, spec.volume, Ez()), Dz(), ε_inv_z, σDz),
-        (GridVolume(sim, spec.volume, Hz()), Bz(), μ_inv_z, σBz),
+        (_get_chunk_component_gv(sim, chunk_gv, Ex()), Dx(), ε_inv_x, σDx),
+        (_get_chunk_component_gv(sim, chunk_gv, Hx()), Bx(), μ_inv_x, σBx),
+        (_get_chunk_component_gv(sim, chunk_gv, Ey()), Dy(), ε_inv_y, σDy),
+        (_get_chunk_component_gv(sim, chunk_gv, Hy()), By(), μ_inv_y, σBy),
+        (_get_chunk_component_gv(sim, chunk_gv, Ez()), Dz(), ε_inv_z, σDz),
+        (_get_chunk_component_gv(sim, chunk_gv, Hz()), Bz(), μ_inv_z, σBz),
     )
 
     tasks = Vector{Task}(undef, length(components))
@@ -849,20 +965,51 @@ end
 # -------------------------------------------------------- #
 
 """
+    _slice_pml_sigma(σ_global, N_local, start_idx)
+
+Create a chunk-local PML sigma array from the global sigma array.
+The kernel accesses sigma via `get_σ(σ, ix) = σ[2*ix-1]` using chunk-local
+indices. For a chunk starting at global index `start_idx`, local index `i`
+corresponds to global index `i + start_idx - 1`, so we need:
+    σ_local[2*i - 1] = σ_global[2*(i + start_idx - 1) - 1]
+"""
+function _slice_pml_sigma(σ_global, N_local::Int, start_idx::Int)
+    isnothing(σ_global) && return nothing
+
+    σ_cpu = Array(σ_global)
+    σ_local = zeros(eltype(σ_cpu), 2 * N_local + 1)
+    for i = 1:N_local
+        global_sigma_idx = 2 * (i + start_idx - 1) - 1
+        if 1 <= global_sigma_idx <= length(σ_cpu)
+            σ_local[2*i-1] = σ_cpu[global_sigma_idx]
+        end
+    end
+    return backend_array(σ_local)
+end
+
+"""
     _init_chunk_boundaries(sim, spec)
 
 Create boundary data for a chunk. Non-PML chunks get all-nothing BoundaryData.
-For PML chunks, we use the global sigma arrays (since sigma is indexed by
-global position via get_σ(σ, idx)).
+For PML chunks, create chunk-local sigma arrays so that kernel-local indices
+map to the correct global PML conductivity values.
 """
 function _init_chunk_boundaries(sim::SimulationData, spec::ChunkSpec)
     pf = spec.physics
     if !has_any_pml(pf)
         return BoundaryData{backend_array}()
     end
-    # For single chunk or chunks that span the full domain in PML directions,
-    # reuse the global boundary data
-    return sim.boundary_data
+
+    gv = spec.grid_volume
+
+    return BoundaryData{backend_array}(
+        σBx = pf.has_pml_x ? _slice_pml_sigma(sim.boundary_data.σBx, gv.Nx, gv.start_idx[1]) : nothing,
+        σBy = pf.has_pml_y ? _slice_pml_sigma(sim.boundary_data.σBy, gv.Ny, gv.start_idx[2]) : nothing,
+        σBz = pf.has_pml_z ? _slice_pml_sigma(sim.boundary_data.σBz, gv.Nz, gv.start_idx[3]) : nothing,
+        σDx = pf.has_pml_x ? _slice_pml_sigma(sim.boundary_data.σDx, gv.Nx, gv.start_idx[1]) : nothing,
+        σDy = pf.has_pml_y ? _slice_pml_sigma(sim.boundary_data.σDy, gv.Ny, gv.start_idx[2]) : nothing,
+        σDz = pf.has_pml_z ? _slice_pml_sigma(sim.boundary_data.σDz, gv.Nz, gv.start_idx[3]) : nothing,
+    )
 end
 
 # -------------------------------------------------------- #
@@ -870,11 +1017,13 @@ end
 # -------------------------------------------------------- #
 
 """
-    _assign_sources_to_chunk(sim, spec, chunk_gv)
+    _assign_sources_to_chunk(sim, spec)
 
-Find sources that overlap this chunk and create chunk-local references.
+Find sources that overlap this chunk and create chunk-local copies with
+amplitude data clipped to the chunk boundaries.
 For single-chunk, this returns all sources unchanged.
-For multi-chunk, source offsets are adjusted to chunk-local coordinates.
+For multi-chunk, source amplitude arrays are sliced to only cover the
+overlap region, and the GridVolume is adjusted accordingly.
 """
 function _assign_sources_to_chunk(sim::SimulationData{N,T,CN,CT,BT}, spec::ChunkSpec) where {N,T,CN,CT,BT}
     isnothing(sim.source_data) && return SourceData{CT}[]
@@ -885,15 +1034,66 @@ function _assign_sources_to_chunk(sim::SimulationData{N,T,CN,CT,BT}, spec::Chunk
 
     chunk_sources = SourceData{CT}[]
     for src in sim.source_data
-        # Check if source overlaps this chunk
-        src_vol = Volume(
-            center = Real[src.gv.start_idx[1] + src.gv.Nx/2, src.gv.start_idx[2] + src.gv.Ny/2, src.gv.start_idx[3] + src.gv.Nz/2],
-            size = Real[src.gv.Nx, src.gv.Ny, src.gv.Nz],
-        )
-        chunk_vol = spec.volume
-        if _source_overlaps_volume_by_gv(src.gv, spec.grid_volume)
-            push!(chunk_sources, src)
+        if !_source_overlaps_volume_by_gv(src.gv, spec.grid_volume)
+            continue
         end
+
+        # Compute the chunk's component-specific end index.
+        # The chunk's grid_volume uses Center(), but the source uses a specific
+        # component (e.g., Ex) which may have +1 voxels in staggered dimensions.
+        chunk_comp_dims = _get_chunk_component_voxel_count(sim, src.gv.component, spec.grid_volume)
+        chunk_comp_end = [
+            spec.grid_volume.start_idx[1] + chunk_comp_dims[1] - 1,
+            spec.grid_volume.start_idx[2] + chunk_comp_dims[2] - 1,
+            spec.grid_volume.start_idx[3] + chunk_comp_dims[3] - 1,
+        ]
+
+        # Compute the overlap region in global grid indices
+        overlap_start = [
+            max(src.gv.start_idx[1], spec.grid_volume.start_idx[1]),
+            max(src.gv.start_idx[2], spec.grid_volume.start_idx[2]),
+            max(src.gv.start_idx[3], spec.grid_volume.start_idx[3]),
+        ]
+        overlap_end = [
+            min(src.gv.end_idx[1], chunk_comp_end[1]),
+            min(src.gv.end_idx[2], chunk_comp_end[2]),
+            min(src.gv.end_idx[3], chunk_comp_end[3]),
+        ]
+
+        # Verify overlap is valid (could become invalid after stagger adjustment)
+        any(overlap_end .< overlap_start) && continue
+
+        # Convert global overlap indices to source-local array indices
+        # Source amplitude_data is indexed 1:Nx, 1:Ny, 1:Nz
+        # where index 1 corresponds to src.gv.start_idx
+        local_start = overlap_start .- src.gv.start_idx .+ 1
+        local_end = overlap_end .- src.gv.start_idx .+ 1
+
+        # Extract the clipped amplitude sub-array
+        clipped_amplitude = src.amplitude_data[
+            local_start[1]:local_end[1],
+            local_start[2]:local_end[2],
+            local_start[3]:local_end[3],
+        ]
+
+        # Create a new GridVolume for the clipped region
+        clipped_gv = GridVolume(
+            component = src.gv.component,
+            start_idx = overlap_start,
+            end_idx = overlap_end,
+            Nx = overlap_end[1] - overlap_start[1] + 1,
+            Ny = overlap_end[2] - overlap_start[2] + 1,
+            Nz = overlap_end[3] - overlap_start[3] + 1,
+        )
+
+        # Create a new SourceData with the clipped data
+        clipped_src = SourceData{CT}(
+            amplitude_data = clipped_amplitude,
+            time_src = src.time_src,
+            gv = clipped_gv,
+            component = src.component,
+        )
+        push!(chunk_sources, clipped_src)
     end
     return chunk_sources
 end
@@ -1104,10 +1304,59 @@ function exchange_halos!(sim::SimulationData, field_group::Symbol)
                 src_f = _get_chunk_field(chunk, comp)
                 dst_f = _get_chunk_field(dst, comp)
                 if !isnothing(src_f) && !isnothing(dst_f)
-                    @views dst_f[conn.dst_range...] .= src_f[conn.src_range...]
+                    # Compute per-component ranges based on actual field array
+                    # dimensions, not Center grid volume dimensions. This handles
+                    # Yee stagger (+1 in certain dimensions).
+                    src_parent = parent(src_f)
+                    dst_parent = parent(dst_f)
+
+                    # Interior dimensions (parent size - 2 ghost cells per dim)
+                    src_dims = size(src_parent) .- 2
+                    dst_dims = size(dst_parent) .- 2
+
+                    # Build component-specific send/recv ranges
+                    sr = _component_send_range(src_dims, conn.axis, conn.src_range)
+                    dr = _component_recv_range(dst_dims, conn.axis, conn.dst_range)
+
+                    @views dst_parent[dr[1].+1, dr[2].+1, dr[3].+1] .=
+                        src_parent[sr[1].+1, sr[2].+1, sr[3].+1]
                 end
             end
         end
     end
     return
+end
+
+"""
+    _component_send_range(comp_dims, axis, center_range)
+
+Compute the send range for a specific component, extending non-split dimensions
+to cover the full component extent (which may be larger than Center due to Yee stagger).
+The split axis uses the Center-based range because:
+- For non-staggered components (Nz_comp = Nz_center): Nz_center IS the last interior cell
+- For staggered components (Nz_comp = Nz_center+1): Nz_center is the last COMPUTED cell;
+  Nz_center+1 is the boundary cell (filled by recv, not computed by kernel)
+"""
+function _component_send_range(comp_dims::NTuple{3,Int}, axis::Int, center_range::NTuple{3,UnitRange{Int}})
+    ranges = [1:comp_dims[1], 1:comp_dims[2], 1:comp_dims[3]]
+    # Keep the split axis range from center_range (correct for both staggered and non-staggered)
+    ranges[axis] = center_range[axis]
+    return (ranges[1], ranges[2], ranges[3])
+end
+
+"""
+    _component_recv_range(comp_dims, axis, center_range)
+
+Compute the recv range for a specific component, extending non-split dimensions
+to cover the full component extent.
+The split axis uses the Center-based range because:
+- For non-staggered (Nz_comp = Nz_center): Nz_center+1 IS the ghost cell
+- For staggered (Nz_comp = Nz_center+1): Nz_center+1 IS the boundary cell
+  (the uncomputed last interior cell that needs to be filled from the neighbor)
+"""
+function _component_recv_range(comp_dims::NTuple{3,Int}, axis::Int, center_range::NTuple{3,UnitRange{Int}})
+    ranges = [1:comp_dims[1], 1:comp_dims[2], 1:comp_dims[3]]
+    # Keep the split axis range from center_range (correct for both staggered and non-staggered)
+    ranges[axis] = center_range[axis]
+    return (ranges[1], ranges[2], ranges[3])
 end

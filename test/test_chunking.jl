@@ -424,7 +424,7 @@ using GeometryPrimitives
         @test Khronos._resolve_num_chunks(sim) == 1
     end
 
-    @testset "num_chunks=:auto" begin
+    @testset "num_chunks=:auto without PML" begin
         sim = Khronos.Simulation(
             cell_size = [10.0, 10.0, 10.0],
             cell_center = [0.0, 0.0, 0.0],
@@ -439,8 +439,38 @@ using GeometryPrimitives
             ],
             num_chunks = :auto,
         )
-        n = Khronos._resolve_num_chunks(sim)
-        @test n >= 1
+
+        Khronos.init_geometry(sim, sim.geometry)
+        Khronos.init_boundaries(sim, sim.boundaries)
+
+        plan = Khronos.plan_chunks(sim)
+        # Without PML, :auto falls through to _resolve_num_chunks -> single chunk
+        @test plan.total_chunks == 1
+    end
+
+    @testset "num_chunks=:auto with PML produces PML grid (3D)" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            num_chunks = :auto,
+        )
+
+        Khronos.init_geometry(sim, sim.geometry)
+        Khronos.init_boundaries(sim, sim.boundaries)
+
+        plan = Khronos.plan_chunks(sim)
+        # 3D with PML on all sides: 3 intervals per axis -> 3^3 = 27 regions
+        @test plan.total_chunks == 27
     end
 
     @testset "Halo connection setup" begin
@@ -599,5 +629,273 @@ using GeometryPrimitives
         # Non-overlapping
         chunk_gv2 = Khronos.GridVolume(Khronos.Center(), [60, 1, 1], [100, 100, 100], 41, 100, 100)
         @test !Khronos._source_overlaps_volume_by_gv(src_gv, chunk_gv2)
+    end
+
+    # -------------------------------------------------------- #
+    # PML grid splitting tests
+    # -------------------------------------------------------- #
+
+    @testset "_pml_grid_regions basic 3D" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+        )
+
+        regions = Khronos._pml_grid_regions(sim)
+
+        # 3 intervals per axis -> 3^3 = 27 regions
+        @test length(regions) == 27
+
+        # Check full domain coverage: no gaps or overlaps
+        # Total voxels across all regions should equal Nx * Ny * Nz
+        total_voxels = 0
+        for (s, e) in regions
+            vol = (e[1] - s[1] + 1) * (e[2] - s[2] + 1) * (e[3] - s[3] + 1)
+            @test vol > 0
+            total_voxels += vol
+        end
+        @test total_voxels == sim.Nx * sim.Ny * sim.Nz
+
+        # All regions should start at >= 1 and end at <= N
+        for (s, e) in regions
+            @test all(s .>= 1)
+            @test e[1] <= sim.Nx
+            @test e[2] <= sim.Ny
+            @test e[3] <= sim.Nz
+        end
+    end
+
+    @testset "_pml_grid_regions 2D" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 0.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0]],
+        )
+
+        regions = Khronos._pml_grid_regions(sim)
+
+        # 2D: 3 intervals per axis -> 3^2 = 9 regions
+        @test length(regions) == 9
+    end
+
+    @testset "_pml_grid_regions partial PML" begin
+        # PML only on X axis
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [0.0, 0.0], [0.0, 0.0]],
+        )
+
+        regions = Khronos._pml_grid_regions(sim)
+
+        # X: 3 intervals, Y: 1 interval (no PML), Z: 1 interval -> 3*1*1 = 3
+        @test length(regions) == 3
+    end
+
+    @testset "plan_chunks_pml_grid physics flags" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            num_chunks = :auto,
+        )
+
+        Khronos.init_geometry(sim, sim.geometry)
+        Khronos.init_boundaries(sim, sim.boundaries)
+
+        plan = Khronos.plan_chunks(sim)
+        @test plan.total_chunks == 27
+
+        # Categorize chunks by PML direction count
+        interior_chunks = filter(c -> !Khronos.has_any_pml(c.physics), plan.chunks)
+        face_chunks = filter(c -> count([c.physics.has_pml_x, c.physics.has_pml_y, c.physics.has_pml_z]) == 1, plan.chunks)
+        edge_chunks = filter(c -> count([c.physics.has_pml_x, c.physics.has_pml_y, c.physics.has_pml_z]) == 2, plan.chunks)
+        corner_chunks = filter(c -> count([c.physics.has_pml_x, c.physics.has_pml_y, c.physics.has_pml_z]) == 3, plan.chunks)
+
+        # 3D: 1 interior, 6 faces, 12 edges, 8 corners
+        @test length(interior_chunks) == 1
+        @test length(face_chunks) == 6
+        @test length(edge_chunks) == 12
+        @test length(corner_chunks) == 8
+
+        # Interior chunk has no PML
+        ic = interior_chunks[1]
+        @test !ic.physics.has_pml_x
+        @test !ic.physics.has_pml_y
+        @test !ic.physics.has_pml_z
+    end
+
+    @testset "plan_chunks_pml_grid adjacency" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            num_chunks = :auto,
+        )
+
+        Khronos.init_geometry(sim, sim.geometry)
+        Khronos.init_boundaries(sim, sim.boundaries)
+
+        plan = Khronos.plan_chunks(sim)
+
+        # In a 3x3x3 grid, adjacency count: each internal face between two adjacent cells.
+        # Per axis: (3-1) * 3 * 3 = 18 adjacencies per axis, times 3 axes = 54 total
+        @test length(plan.adjacency) == 54
+
+        # Interior chunk (no PML) should touch 6 face chunks
+        interior = filter(c -> !Khronos.has_any_pml(c.physics), plan.chunks)
+        @test length(interior) == 1
+        @test length(interior[1].neighbor_ids) == 6
+    end
+
+    @testset "PML grid field allocation" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            num_chunks = :auto,
+        )
+
+        Khronos.prepare_simulation!(sim)
+
+        # Find interior chunk (no PML flags)
+        interior_idx = findfirst(c -> !Khronos.has_any_pml(c.spec.physics), sim.chunk_data)
+        @test !isnothing(interior_idx)
+        interior_chunk = sim.chunk_data[interior_idx]
+
+        # Interior chunk should have all C/U/W auxiliary fields as nothing
+        @test isnothing(interior_chunk.fields.fCBx)
+        @test isnothing(interior_chunk.fields.fCBy)
+        @test isnothing(interior_chunk.fields.fCBz)
+        @test isnothing(interior_chunk.fields.fUBx)
+        @test isnothing(interior_chunk.fields.fUBy)
+        @test isnothing(interior_chunk.fields.fUBz)
+        @test isnothing(interior_chunk.fields.fWBx)
+        @test isnothing(interior_chunk.fields.fWBy)
+        @test isnothing(interior_chunk.fields.fWBz)
+        @test isnothing(interior_chunk.fields.fCDx)
+        @test isnothing(interior_chunk.fields.fCDy)
+        @test isnothing(interior_chunk.fields.fCDz)
+        @test isnothing(interior_chunk.fields.fUDx)
+        @test isnothing(interior_chunk.fields.fUDy)
+        @test isnothing(interior_chunk.fields.fUDz)
+        @test isnothing(interior_chunk.fields.fWDx)
+        @test isnothing(interior_chunk.fields.fWDy)
+        @test isnothing(interior_chunk.fields.fWDz)
+
+        # Find a face-X chunk (has_pml_x=true, has_pml_y=false, has_pml_z=false)
+        face_x_idx = findfirst(c ->
+            c.spec.physics.has_pml_x && !c.spec.physics.has_pml_y && !c.spec.physics.has_pml_z,
+            sim.chunk_data)
+        @test !isnothing(face_x_idx)
+        face_x_chunk = sim.chunk_data[face_x_idx]
+
+        # Face-X: WBx should be allocated (PML in own direction X)
+        @test !isnothing(face_x_chunk.fields.fWBx)
+        # Face-X: UBx needs PML in next direction (Y) -> nothing
+        @test isnothing(face_x_chunk.fields.fUBx)
+        # Face-X: WBy needs PML in Y direction -> nothing
+        @test isnothing(face_x_chunk.fields.fWBy)
+        # Face-X: WBz needs PML in Z direction -> nothing
+        @test isnothing(face_x_chunk.fields.fWBz)
+    end
+
+    @testset "PML grid boundary data" begin
+        sim = Khronos.Simulation(
+            cell_size = [10.0, 10.0, 10.0],
+            cell_center = [0.0, 0.0, 0.0],
+            resolution = 10,
+            sources = [
+                Khronos.UniformSource(
+                    time_profile = Khronos.ContinuousWaveSource(fcen = 1.0),
+                    component = Khronos.Ez(),
+                    center = [0.0, 0.0, 0.0],
+                    size = [0.0, 0.0, 0.0],
+                ),
+            ],
+            boundaries = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            num_chunks = :auto,
+        )
+
+        Khronos.prepare_simulation!(sim)
+
+        # Interior chunk: all sigma should be nothing
+        interior_idx = findfirst(c -> !Khronos.has_any_pml(c.spec.physics), sim.chunk_data)
+        @test !isnothing(interior_idx)
+        interior_chunk = sim.chunk_data[interior_idx]
+        @test isnothing(interior_chunk.boundary_data.σBx)
+        @test isnothing(interior_chunk.boundary_data.σBy)
+        @test isnothing(interior_chunk.boundary_data.σBz)
+        @test isnothing(interior_chunk.boundary_data.σDx)
+        @test isnothing(interior_chunk.boundary_data.σDy)
+        @test isnothing(interior_chunk.boundary_data.σDz)
+
+        # Face-X chunk: σBx/σDx should be arrays, σBy/σBz/σDy/σDz should be nothing
+        face_x_idx = findfirst(c ->
+            c.spec.physics.has_pml_x && !c.spec.physics.has_pml_y && !c.spec.physics.has_pml_z,
+            sim.chunk_data)
+        @test !isnothing(face_x_idx)
+        face_x_chunk = sim.chunk_data[face_x_idx]
+        @test !isnothing(face_x_chunk.boundary_data.σBx)
+        @test !isnothing(face_x_chunk.boundary_data.σDx)
+        @test isnothing(face_x_chunk.boundary_data.σBy)
+        @test isnothing(face_x_chunk.boundary_data.σBz)
+        @test isnothing(face_x_chunk.boundary_data.σDy)
+        @test isnothing(face_x_chunk.boundary_data.σDz)
     end
 end
