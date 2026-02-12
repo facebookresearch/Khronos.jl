@@ -612,6 +612,7 @@ using GeometryPrimitives
             Khronos.MonitorData[],
             Khronos.HaloConnection[], Khronos.HaloConnection[],
             AbstractArray[], AbstractArray[],
+            AbstractArray[], AbstractArray[],
             (10, 10, 10),
         )
 

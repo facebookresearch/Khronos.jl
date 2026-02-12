@@ -11,6 +11,7 @@ using Logging
 using LinearAlgebra
 using OffsetArrays
 using StaticArrays
+using MPI
 import VectorModesolver
 
 macro status(exs)
@@ -31,6 +32,7 @@ include("Mode.jl")
 include("Boundaries.jl")
 include("Sources/Sources.jl")
 include("Chunking.jl")
+include("Distributed.jl")
 include("Fields.jl")
 include("Monitors.jl")
 include("Timestep.jl")

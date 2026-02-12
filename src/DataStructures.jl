@@ -395,6 +395,8 @@ mutable struct ChunkData{N,T,CT,BT}
     halo_recv::Vector{HaloConnection}
     halo_send_buffers::Vector{AbstractArray}
     halo_recv_buffers::Vector{AbstractArray}
+    halo_send_gpu_staging::Vector{AbstractArray}
+    halo_recv_gpu_staging::Vector{AbstractArray}
     ndrange::NTuple{3,Int}
 end
 
@@ -458,6 +460,7 @@ end
     # Chunking support
     chunk_plan::Union{ChunkPlan,Nothing} = nothing
     chunk_data::Union{Vector{ChunkData{N,T,CT,BT}},Nothing} = nothing
+    chunk_rank_assignment::Union{Vector{Int},Nothing} = nothing
 end
 
 # Convenience wrapper

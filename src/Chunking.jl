@@ -1150,6 +1150,44 @@ function create_all_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,B
             spec, fields, geom, bnd, src, mon,
             HaloConnection[], HaloConnection[],
             AbstractArray[], AbstractArray[],
+            AbstractArray[], AbstractArray[],
+            ndrange,
+        )
+        push!(chunks, chunk)
+    end
+    return chunks
+end
+
+# -------------------------------------------------------- #
+# create_local_chunks -- MPI: only allocate chunks for this rank
+# -------------------------------------------------------- #
+
+"""
+    create_local_chunks(sim::SimulationData)
+
+Like `create_all_chunks` but only allocates chunks assigned to the current
+MPI rank. Used in distributed mode.
+"""
+function create_local_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,BT}
+    rank = mpi_rank()
+    assignment = sim.chunk_rank_assignment
+    chunks = ChunkData{N,T,CT,BT}[]
+
+    for spec in sim.chunk_plan.chunks
+        assignment[spec.id] != rank && continue
+        ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, max(1, spec.grid_volume.Nz))
+
+        fields = _allocate_chunk_fields(sim, spec)
+        geom = _init_chunk_geometry(sim, spec, sim.geometry)
+        bnd = _init_chunk_boundaries(sim, spec)
+        src = _assign_sources_to_chunk(sim, spec)
+        mon = MonitorData[]
+
+        chunk = ChunkData{N,T,CT,BT}(
+            spec, fields, geom, bnd, src, mon,
+            HaloConnection[], HaloConnection[],
+            AbstractArray[], AbstractArray[],
+            AbstractArray[], AbstractArray[],
             ndrange,
         )
         push!(chunks, chunk)
@@ -1178,6 +1216,19 @@ function _compute_interior_face_range(chunk_gv::GridVolume, axis::Int, side::Sym
 end
 
 """
+    _local_chunk_index(sim::SimulationData, chunk_id::Int)
+
+Find the index of a chunk in sim.chunk_data by its spec id.
+Returns nothing if the chunk is not local (e.g., on another MPI rank).
+"""
+function _local_chunk_index(sim::SimulationData, chunk_id::Int)
+    for (i, chunk) in enumerate(sim.chunk_data)
+        chunk.spec.id == chunk_id && return i
+    end
+    return nothing
+end
+
+"""
     connect_chunks!(sim::SimulationData)
 
 Build halo connections between adjacent chunks and allocate send/recv buffers.
@@ -1185,17 +1236,13 @@ No-op for single-chunk plans.
 """
 function connect_chunks!(sim::SimulationData)
     isnothing(sim.chunk_data) && return
-    length(sim.chunk_data) <= 1 && return
+    length(sim.chunk_data) <= 1 && !is_distributed() && return
 
     for (i, j, axis) in sim.chunk_plan.adjacency
-        chunk_i = sim.chunk_data[i]
-        chunk_j = sim.chunk_data[j]
-        gv_i = chunk_i.spec.grid_volume
-        gv_j = chunk_j.spec.grid_volume
+        gv_i = sim.chunk_plan.chunks[i].grid_volume
+        gv_j = sim.chunk_plan.chunks[j].grid_volume
 
         # Forward connection: i -> j (i's upper face -> j's ghost at lower)
-        # The source is the last layer of chunk i along the axis
-        # The destination is the ghost cell (index 0) of chunk j
         src_fwd = _make_send_range(gv_i, axis, :upper)
         dst_fwd = _make_recv_range(gv_j, axis, :lower)
         conn_fwd = HaloConnection(i, j, axis, src_fwd, dst_fwd)
@@ -1205,10 +1252,19 @@ function connect_chunks!(sim::SimulationData)
         dst_rev = _make_recv_range(gv_i, axis, :upper)
         conn_rev = HaloConnection(j, i, axis, src_rev, dst_rev)
 
-        push!(chunk_i.halo_send, conn_fwd)
-        push!(chunk_j.halo_recv, conn_fwd)
-        push!(chunk_j.halo_send, conn_rev)
-        push!(chunk_i.halo_recv, conn_rev)
+        # In distributed mode, only add connections where at least one
+        # endpoint is local
+        local_i = _local_chunk_index(sim, i)
+        local_j = _local_chunk_index(sim, j)
+
+        if !isnothing(local_i)
+            push!(sim.chunk_data[local_i].halo_send, conn_fwd)
+            push!(sim.chunk_data[local_i].halo_recv, conn_rev)
+        end
+        if !isnothing(local_j)
+            push!(sim.chunk_data[local_j].halo_recv, conn_fwd)
+            push!(sim.chunk_data[local_j].halo_send, conn_rev)
+        end
     end
     return
 end
@@ -1286,45 +1342,101 @@ function _field_components_for_group(group::Symbol)
 end
 
 """
+    _halo_copy!(dst_parent, dr, src_parent, sr)
+
+Copy a halo region from src_parent to dst_parent. On GPU (CuArray), uses
+CUDA.unsafe_copy3d! which maps to cuMemcpy3DAsync (DMA engine, no kernel launch).
+On CPU (Array), falls back to @views broadcast.
+
+dr and sr are tuples of UnitRange{Int} indexing into the parent arrays.
+"""
+function _halo_copy!(dst_parent::CuArray{T}, dr, src_parent::CuArray{T}, sr) where T
+    width  = length(sr[1])
+    height = length(sr[2])
+    depth  = length(sr[3])
+
+    src_Nx = size(src_parent, 1)
+    src_Ny = size(src_parent, 2)
+    dst_Nx = size(dst_parent, 1)
+    dst_Ny = size(dst_parent, 2)
+
+    CUDA.unsafe_copy3d!(
+        pointer(dst_parent), CUDA.DeviceMemory,
+        pointer(src_parent), CUDA.DeviceMemory,
+        width, height, depth;
+        srcPos = (first(sr[1]), first(sr[2]), first(sr[3])),
+        dstPos = (first(dr[1]), first(dr[2]), first(dr[3])),
+        srcPitch = src_Nx * sizeof(T),
+        srcHeight = src_Ny,
+        dstPitch = dst_Nx * sizeof(T),
+        dstHeight = dst_Ny,
+        async = true,
+    )
+end
+
+function _halo_copy!(dst_parent::Array, dr, src_parent::Array, sr)
+    @views dst_parent[dr[1], dr[2], dr[3]] .= src_parent[sr[1], sr[2], sr[3]]
+end
+
+"""
     exchange_halos!(sim, field_group::Symbol)
 
 Exchange ghost cells between chunks for a given field group (:B, :H, :D, :E).
-No-op for single-chunk plans.
+Dispatches to local-only or MPI paths as appropriate.
 """
 function exchange_halos!(sim::SimulationData, field_group::Symbol)
     isnothing(sim.chunk_data) && return
-    length(sim.chunk_data) <= 1 && return
+    length(sim.chunk_data) <= 1 && !is_distributed() && return
 
     components = _field_components_for_group(field_group)
 
+    if !is_distributed()
+        _exchange_halos_local!(sim, components)
+        if backend_engine isa CUDABackend
+            CUDA.synchronize()
+        end
+        return
+    end
+
+    _exchange_halos_mpi!(sim, components)
+end
+
+"""
+    _exchange_halos_local!(sim, components)
+
+Perform local (same-rank) halo copies between chunks. In distributed mode,
+skips connections that cross rank boundaries.
+"""
+function _exchange_halos_local!(sim::SimulationData, components)
+    assignment = sim.chunk_rank_assignment
+    rank = is_distributed() ? mpi_rank() : 0
+
     for chunk in sim.chunk_data
         for conn in chunk.halo_send
-            dst = sim.chunk_data[conn.dst_chunk_id]
+            # Skip remote connections
+            if !isnothing(assignment) && assignment[conn.dst_chunk_id] != rank
+                continue
+            end
+            idx = _local_chunk_index(sim, conn.dst_chunk_id)
+            isnothing(idx) && continue
+            dst = sim.chunk_data[idx]
             for comp in components
                 src_f = _get_chunk_field(chunk, comp)
                 dst_f = _get_chunk_field(dst, comp)
                 if !isnothing(src_f) && !isnothing(dst_f)
-                    # Compute per-component ranges based on actual field array
-                    # dimensions, not Center grid volume dimensions. This handles
-                    # Yee stagger (+1 in certain dimensions).
                     src_parent = parent(src_f)
                     dst_parent = parent(dst_f)
-
-                    # Interior dimensions (parent size - 2 ghost cells per dim)
                     src_dims = size(src_parent) .- 2
                     dst_dims = size(dst_parent) .- 2
-
-                    # Build component-specific send/recv ranges
                     sr = _component_send_range(src_dims, conn.axis, conn.src_range)
                     dr = _component_recv_range(dst_dims, conn.axis, conn.dst_range)
-
-                    @views dst_parent[dr[1].+1, dr[2].+1, dr[3].+1] .=
-                        src_parent[sr[1].+1, sr[2].+1, sr[3].+1]
+                    sr_shifted = (sr[1] .+ 1, sr[2] .+ 1, sr[3] .+ 1)
+                    dr_shifted = (dr[1] .+ 1, dr[2] .+ 1, dr[3] .+ 1)
+                    _halo_copy!(dst_parent, dr_shifted, src_parent, sr_shifted)
                 end
             end
         end
     end
-    return
 end
 
 """

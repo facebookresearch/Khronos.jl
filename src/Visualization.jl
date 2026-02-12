@@ -291,8 +291,8 @@ function _get_plane_ranges(gv::GridVolume)
 end
 
 function _pull_fields_from_device(sim::SimulationData, component::Field)
-    if isnothing(sim.chunk_data) || length(sim.chunk_data) == 1
-        # Single chunk: pull directly from sim.fields
+    if !is_distributed() && (isnothing(sim.chunk_data) || length(sim.chunk_data) == 1)
+        # Single chunk, single process: pull directly from sim.fields
         current_fields = get_fields_from_component(sim, component)
         array_range = get_component_voxel_count(sim, component)
         # Index out the ghost cells and collect to the host
@@ -300,28 +300,34 @@ function _pull_fields_from_device(sim::SimulationData, component::Field)
             collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]),
         )
     else
-        # Multi-chunk: reassemble from chunk-local arrays
+        # Multi-chunk (or distributed): reassemble from chunk-local arrays
         array_range = get_component_voxel_count(sim, component)
         current_fields = zeros(array_range...)
         for chunk in sim.chunk_data
             chunk_f = _get_chunk_field(chunk, component)
             isnothing(chunk_f) && continue
             gv = chunk.spec.grid_volume
-            # Compute the global index range for this chunk
-            # The chunk's grid_volume uses Center() component; compute offset for this component
-            comp_offset = get_component_voxel_count(sim, component) .- [sim.Nx, sim.Ny, sim.Nz]
             chunk_dims = _get_chunk_component_voxel_count(sim, component, gv)
-            # Map chunk local indices to global indices
+            # Copy chunk interior to host, then place in global array
+            chunk_host = Base.Array(parent(chunk_f)[2:chunk_dims[1]+1, 2:chunk_dims[2]+1, 2:chunk_dims[3]+1])
             for iz in 1:chunk_dims[3], iy in 1:chunk_dims[2], ix in 1:chunk_dims[1]
                 gx = ix + gv.start_idx[1] - 1
                 gy = iy + gv.start_idx[2] - 1
                 gz = iz + gv.start_idx[3] - 1
                 if 1 <= gx <= array_range[1] && 1 <= gy <= array_range[2] && 1 <= gz <= array_range[3]
-                    current_fields[gx, gy, gz] = Base.Array(collect([chunk_f[ix, iy, iz]]))[1]
+                    current_fields[gx, gy, gz] = chunk_host[ix, iy, iz]
                 end
             end
         end
     end
+
+    # MPI reduction: sum local contributions across all ranks to root
+    if is_distributed()
+        global_fields = similar(current_fields)
+        MPI.Reduce!(current_fields, global_fields, MPI.SUM, 0, mpi_comm())
+        current_fields = global_fields
+    end
+
     return current_fields
 end
 

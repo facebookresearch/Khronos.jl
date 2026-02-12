@@ -105,16 +105,85 @@ function update_monitor(sim::SimulationData, monitor::DFTMonitorData, time::Real
     update_dft_kernel = update_dft_monitor!(backend_engine)
 
     ndrange = (monitor.gv.Nx, monitor.gv.Ny, monitor.gv.Nz)
-    update_dft_kernel(
-        monitor.fields,
-        get_fields_from_component(sim, monitor.component),
-        monitor.frequencies,
-        monitor.gv.start_idx[1] - 1,
-        monitor.gv.start_idx[2] - 1,
-        monitor.gv.start_idx[3] - 1,
-        complex_backend_number(-im * 2 * π * time),
-        ndrange = ndrange,
-    )
+
+    if isnothing(sim.chunk_data) || length(sim.chunk_data) == 1
+        # Single chunk: use sim.fields directly (shared reference)
+        update_dft_kernel(
+            monitor.fields,
+            get_fields_from_component(sim, monitor.component),
+            monitor.frequencies,
+            monitor.gv.start_idx[1] - 1,
+            monitor.gv.start_idx[2] - 1,
+            monitor.gv.start_idx[3] - 1,
+            complex_backend_number(-im * 2 * π * time),
+            ndrange = ndrange,
+        )
+    else
+        # Multi-chunk: find the chunk containing the monitor and read from it
+        for chunk in sim.chunk_data
+            chunk_field = _get_chunk_field(chunk, monitor.component)
+            isnothing(chunk_field) && continue
+
+            chunk_gv = chunk.spec.grid_volume
+            chunk_comp_gv = _get_chunk_component_gv(sim, chunk_gv, monitor.component)
+
+            # Compute overlap between monitor and chunk in global index space
+            overlap_start = max.(monitor.gv.start_idx, chunk_comp_gv.start_idx)
+            overlap_end = min.(monitor.gv.end_idx, chunk_comp_gv.end_idx)
+
+            # Skip if no overlap
+            any(overlap_end .< overlap_start) && continue
+
+            overlap_size = overlap_end .- overlap_start .+ 1
+
+            # Monitor-local base: which monitor index does the overlap start at
+            mon_base = overlap_start .- monitor.gv.start_idx
+
+            # Chunk-local offset: where in the chunk's field array
+            chunk_offset = overlap_start .- chunk_gv.start_idx
+
+            update_dft_kernel_chunk = update_dft_monitor_chunk!(backend_engine)
+            update_dft_kernel_chunk(
+                monitor.fields,
+                chunk_field,
+                monitor.frequencies,
+                mon_base[1], mon_base[2], mon_base[3],
+                chunk_offset[1], chunk_offset[2], chunk_offset[3],
+                complex_backend_number(-im * 2 * π * time),
+                ndrange = tuple(overlap_size...),
+            )
+        end
+    end
+end
+
+@kernel function update_dft_monitor_chunk!(
+    monitor_fields::AbstractArray,
+    chunk_fields::AbstractArray,
+    frequencies::AbstractArray,
+    mon_base_x::Int,
+    mon_base_y::Int,
+    mon_base_z::Int,
+    chunk_offset_x::Int,
+    chunk_offset_y::Int,
+    chunk_offset_z::Int,
+    time_fac::Number,
+)
+    ix, iy, iz = @index(Global, NTuple)
+
+    # Map kernel index to monitor index and chunk field index
+    mx = ix + mon_base_x
+    my = iy + mon_base_y
+    mz = iz + mon_base_z
+    cx = ix + chunk_offset_x
+    cy = iy + chunk_offset_y
+    cz = iz + chunk_offset_z
+
+    for k in eachindex(frequencies)
+        monitor_fields[mx, my, mz, k] += (
+            exp(frequencies[k] * time_fac) *
+            chunk_fields[cx, cy, cz]
+        )
+    end
 end
 
 @kernel function update_dft_monitor!(

@@ -66,7 +66,9 @@ function prepare_simulation!(sim::SimulationData)
     end
 
     num_voxels = sim.Nx * sim.Ny * sim.Nz
-    @info("Preparing simulation object ($(sim.Nx)×$(sim.Ny)×$(sim.Nz) = $(num_voxels) voxels)...")
+    if !is_distributed() || is_root()
+        @info("Preparing simulation object ($(sim.Nx)×$(sim.Ny)×$(sim.Nz) = $(num_voxels) voxels)...")
+    end
 
     t_start = time()
 
@@ -74,22 +76,35 @@ function prepare_simulation!(sim::SimulationData)
     t0 = time()
     init_geometry(sim, sim.geometry)
     t1 = time()
-    @info("  init_geometry:   $(round(t1-t0, digits=3))s")
+    if !is_distributed() || is_root()
+        @info("  init_geometry:   $(round(t1-t0, digits=3))s")
+    end
 
     # prepare boundaries
     init_boundaries(sim, sim.boundaries)
     t2 = time()
-    @info("  init_boundaries: $(round(t2-t1, digits=3))s")
+    if !is_distributed() || is_root()
+        @info("  init_boundaries: $(round(t2-t1, digits=3))s")
+    end
 
     # plan domain decomposition into chunks
     sim.chunk_plan = plan_chunks(sim)
     t2b = time()
-    @info("  plan_chunks:     $(round(t2b-t2, digits=3))s ($(sim.chunk_plan.total_chunks) chunk(s))")
+    if !is_distributed() || is_root()
+        @info("  plan_chunks:     $(round(t2b-t2, digits=3))s ($(sim.chunk_plan.total_chunks) chunk(s))")
+    end
+
+    # MPI chunk-to-rank assignment
+    if is_distributed()
+        sim.chunk_rank_assignment = assign_chunks_to_ranks(sim.chunk_plan, mpi_size())
+    end
 
     # prepare sources
     add_sources(sim, sim.sources)
     t3 = time()
-    @info("  add_sources:     $(round(t3-t2b, digits=3))s")
+    if !is_distributed() || is_root()
+        @info("  add_sources:     $(round(t3-t2b, digits=3))s")
+    end
 
     # determine dimensionality
     get_sim_dims(sim)
@@ -97,20 +112,35 @@ function prepare_simulation!(sim::SimulationData)
     # prepare fields
     init_fields(sim, sim.dimensionality)
     t4 = time()
-    @info("  init_fields:     $(round(t4-t3, digits=3))s")
+    if !is_distributed() || is_root()
+        @info("  init_fields:     $(round(t4-t3, digits=3))s")
+    end
 
     # prepare time and dft monitors
     init_monitors(sim, sim.monitors)
     t5 = time()
-    @info("  init_monitors:   $(round(t5-t4, digits=3))s")
+    if !is_distributed() || is_root()
+        @info("  init_monitors:   $(round(t5-t4, digits=3))s")
+    end
 
-    # create per-chunk runtime data wrapping the initialized arrays
-    sim.chunk_data = create_all_chunks(sim)
+    # create per-chunk runtime data
+    if is_distributed()
+        sim.chunk_data = create_local_chunks(sim)
+    else
+        sim.chunk_data = create_all_chunks(sim)
+    end
     connect_chunks!(sim)
-    t6 = time()
-    @info("  create_chunks:   $(round(t6-t5, digits=3))s")
 
-    @info("  Total prepare:   $(round(t6-t_start, digits=3))s")
+    # Allocate MPI staging buffers for cross-rank halo exchange
+    if is_distributed()
+        allocate_mpi_halo_buffers!(sim)
+    end
+
+    t6 = time()
+    if !is_distributed() || is_root()
+        @info("  create_chunks:   $(round(t6-t5, digits=3))s")
+        @info("  Total prepare:   $(round(t6-t_start, digits=3))s")
+    end
 
     sim.is_prepared = true
 
@@ -148,7 +178,9 @@ function run(
 
     num_voxels = sim.Nx * sim.Ny * sim.Nz
     step_start = sim.timestep
-    @info("Starting simulation...")
+    if !is_distributed() || is_root()
+        @info("Starting simulation...")
+    end
     t_run_start = time()
     warmup_steps = 50
     t_after_warmup = nothing
@@ -179,7 +211,9 @@ function run(
                 steps_at_warmup = sim.timestep - step_start
             end
         end
-        @info("All sources have terminated...")
+        if !is_distributed() || is_root()
+            @info("All sources have terminated...")
+        end
     end
 
     # Execute step function. The function should return true if it's time to
@@ -195,7 +229,7 @@ function run(
     t_run_end = time()
     total_steps = sim.timestep - step_start
     elapsed = t_run_end - t_run_start
-    if total_steps > 0 && elapsed > 0
+    if total_steps > 0 && elapsed > 0 && (!is_distributed() || is_root())
         mcells_per_s = num_voxels * total_steps / elapsed / 1e6
         if !isnothing(t_after_warmup) && total_steps > steps_at_warmup
             steady_steps = total_steps - steps_at_warmup
@@ -288,7 +322,9 @@ function run_benchmark(sim::SimulationData, until::Int)
         prepare_simulation!(sim)
     end
 
-    @info("Running simulation...")
+    if !is_distributed() || is_root()
+        @info("Running simulation...")
+    end
 
     t_tic = time()
     for it = 1:until
@@ -301,14 +337,19 @@ function run_benchmark(sim::SimulationData, until::Int)
     KernelAbstractions.synchronize(backend_engine)
 
     time_s = time() - t_tic
-    @info("Run complete.")
-    @info("===========================================")
-    @info("Total number of iterations: $until.")
-    @info("Total simulation time: $time_s seconds.")
-    num_voxels = sim.Nx * sim.Ny * sim.Nz
-    steprate = num_voxels * (until - 10) / time_s / 1e6
-    @info("Simulation speed:  $steprate MCells/S.")
-    @info("===========================================")
+    if !is_distributed() || is_root()
+        @info("Run complete.")
+        @info("===========================================")
+        @info("Total number of iterations: $until.")
+        @info("Total simulation time: $time_s seconds.")
+        num_voxels = sim.Nx * sim.Ny * sim.Nz
+        steprate = num_voxels * (until - 10) / time_s / 1e6
+        @info("Simulation speed:  $steprate MCells/S.")
+        @info("===========================================")
+    else
+        num_voxels = sim.Nx * sim.Ny * sim.Nz
+        steprate = num_voxels * (until - 10) / time_s / 1e6
+    end
 
     return steprate
 end

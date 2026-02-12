@@ -71,7 +71,6 @@ function step_B_from_E!(sim::SimulationData)
         )
     end
 
-    exchange_halos!(sim, :B)
     return
 end
 
@@ -141,7 +140,6 @@ function step_D_from_H!(sim::SimulationData)
         )
     end
 
-    exchange_halos!(sim, :D)
     return
 end
 
@@ -216,15 +214,11 @@ end
 
 function update_magnetic_sources!(sim::SimulationData, t::Real)
     map((c) -> step_sources!(sim, c, t), (Hx(), Hy(), Hz()))
-
-    exchange_halos!(sim, :H)
     return
 end
 
 function update_electric_sources!(sim::SimulationData, t::Real)
     map((c) -> step_sources!(sim, c, t), (Ex(), Ey(), Ez()))
-
-    exchange_halos!(sim, :E)
     return
 end
 
