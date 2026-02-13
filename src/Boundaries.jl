@@ -10,17 +10,17 @@ function sigma_helper(idx, N, Δx, Δt, length_left, length_right)
     real_idx = idx * Δx / 2 # transform idx to position
 
     if real_idx < length_left
-        return u0(length_left) * u((length_left - real_idx) / length_left)
+        return backend_number(u0(length_left) * u((length_left - real_idx) / length_left))
     elseif (total_length - real_idx) < length_right
-        return u0(length_right) *
-               u((length_right - (total_length - real_idx)) / length_right)
+        return backend_number(u0(length_right) *
+               u((length_right - (total_length - real_idx)) / length_right))
     else
-        return 0
+        return zero(backend_number)
     end
 end
 
 function compute_sigma(sim, N, Δx, Δt, length_left, length_right)
-    σ = zeros(N)
+    σ = zeros(backend_number, N)
     if ((length_left != 0.0) || (length_right != 0.0))
         for idx = 1:N
             σ[idx] = sigma_helper(idx, N, Δx, Δt, length_left, length_right)

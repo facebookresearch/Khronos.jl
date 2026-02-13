@@ -65,21 +65,29 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
     # compute grid volume from dimensions
     gv = GridVolume(sim, vol, monitor.component)
 
-    # Get grid weights
+    # Pre-compute constants outside the loop to avoid per-voxel allocations.
+    # The original code allocated [i_1,i_2,i_3], Δ=[Δx,Δy,Δz], and corner
+    # vectors on every iteration. Using SVector and the non-allocating
+    # grid_volume_idx_to_point overload eliminates all heap allocations.
     scale = create_array_from_gridvolume(sim, gv)
+    min_corner = SVector{3}(get_min_corner(vol)...)
+    max_corner = SVector{3}(get_max_corner(vol)...)
+    vol_size = SVector{3}(vol.size...)
+    Δ = SVector{3}(
+        isnothing(sim.Δx) ? 0.0 : Float64(sim.Δx),
+        isnothing(sim.Δy) ? 0.0 : Float64(sim.Δy),
+        isnothing(sim.Δz) ? 0.0 : Float64(sim.Δz),
+    )
+    scale_factor = sim.Δt / sqrt(backend_number(2) * backend_number(π)) * monitor.decimation
+
     for i_3 in axes(scale, 3)
         for i_2 in axes(scale, 2)
             for i_1 in axes(scale, 1)
-                point = grid_volume_idx_to_point(sim, gv, [i_1, i_2, i_3])
-                scale[i_1, i_2] =
-                    compute_interpolation_weight(
-                        point,
-                        vol,
-                        sim.ndims,
-                        sim.Δx,
-                        sim.Δy,
-                        sim.Δz,
-                    ) * sim.Δt / sqrt(2.0 * π) * monitor.decimation
+                point = grid_volume_idx_to_point(sim, gv, i_1, i_2, i_3)
+                w = _compute_interpolation_weight_fast(
+                    point, min_corner, max_corner, vol_size, sim.ndims, Δ,
+                )
+                scale[i_1, i_2] = w * scale_factor
             end
         end
     end
@@ -102,19 +110,18 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
 end
 
 function update_monitor(sim::SimulationData, monitor::DFTMonitorData, time::Real)
-    update_dft_kernel = update_dft_monitor!(backend_engine)
-
     ndrange = (monitor.gv.Nx, monitor.gv.Ny, monitor.gv.Nz)
 
     if isnothing(sim.chunk_data) || length(sim.chunk_data) == 1
         # Single chunk: use sim.fields directly (shared reference)
-        update_dft_kernel(
+        # P.5: Field arrays are raw (no OffsetArray), offset includes +1 for ghost cell
+        sim._cached_dft_kernel(
             monitor.fields,
             get_fields_from_component(sim, monitor.component),
             monitor.frequencies,
-            monitor.gv.start_idx[1] - 1,
-            monitor.gv.start_idx[2] - 1,
-            monitor.gv.start_idx[3] - 1,
+            monitor.gv.start_idx[1],
+            monitor.gv.start_idx[2],
+            monitor.gv.start_idx[3],
             complex_backend_number(-im * 2 * π * time),
             ndrange = ndrange,
         )
@@ -140,9 +147,10 @@ function update_monitor(sim::SimulationData, monitor::DFTMonitorData, time::Real
             mon_base = overlap_start .- monitor.gv.start_idx
 
             # Chunk-local offset: where in the chunk's field array
-            chunk_offset = overlap_start .- chunk_gv.start_idx
+            # P.5: +1 for ghost cell in raw field arrays (no OffsetArray)
+            chunk_offset = overlap_start .- chunk_gv.start_idx .+ 1
 
-            update_dft_kernel_chunk = update_dft_monitor_chunk!(backend_engine)
+            update_dft_kernel_chunk = sim._cached_dft_chunk_kernel
             update_dft_kernel_chunk(
                 monitor.fields,
                 chunk_field,

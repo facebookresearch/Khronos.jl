@@ -109,11 +109,18 @@ function prepare_simulation!(sim::SimulationData)
     # determine dimensionality
     get_sim_dims(sim)
 
+    # estimate memory requirements before allocation
+    mem_est = estimate_memory(sim)
+    t3b = time()
+    if !is_distributed() || is_root()
+        @info("  estimate_mem:    $(round(t3b-t3, digits=3))s")
+    end
+
     # prepare fields
     init_fields(sim, sim.dimensionality)
     t4 = time()
     if !is_distributed() || is_root()
-        @info("  init_fields:     $(round(t4-t3, digits=3))s")
+        @info("  init_fields:     $(round(t4-t3b, digits=3))s")
     end
 
     # prepare time and dft monitors
@@ -131,6 +138,11 @@ function prepare_simulation!(sim::SimulationData)
     end
     connect_chunks!(sim)
 
+    # Precompute halo copy operations for fast runtime exchange
+    if !is_distributed()
+        precompute_halo_ops!(sim)
+    end
+
     # Allocate MPI staging buffers for cross-rank halo exchange
     if is_distributed()
         allocate_mpi_halo_buffers!(sim)
@@ -143,6 +155,15 @@ function prepare_simulation!(sim::SimulationData)
     end
 
     sim.is_prepared = true
+
+    # P.2: Cache kernel objects to avoid repeated construction from non-const global
+    wg = parse(Int, get(ENV, "KHRONOS_WORKGROUP_SIZE", "64"))
+    sim._cached_curl_kernel = step_curl!(backend_engine, (wg,))
+    sim._cached_update_kernel = update_field!(backend_engine, (wg,))
+    sim._cached_curl_comp_kernel = step_curl_comp!(backend_engine, (wg,))
+    sim._cached_source_kernel = update_source!(backend_engine, (wg,))
+    sim._cached_dft_kernel = update_dft_monitor!(backend_engine, (wg,))
+    sim._cached_dft_chunk_kernel = update_dft_monitor_chunk!(backend_engine, (wg,))
 
     return
 end
@@ -195,7 +216,7 @@ function run(
         _run_func = until_after_sources
         wait_for_sources = true
     elseif until_after_sources isa Real
-        _run_func = run_until(sim, wait_for_sources)
+        _run_func = run_until(sim, until_after_sources)
         wait_for_sources = true
     else
         error("Must specify either `until` or `until_after_sources`.")

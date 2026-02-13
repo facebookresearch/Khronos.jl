@@ -59,7 +59,8 @@ function ContinuousWaveSource(; fcen::Number)::ContinuousWaveData
 end
 
 function eval_time_source(src::ContinuousWaveData{N}, t::Real) where {N<:Number}
-    return exp(-im * 2 * π * src.fcen * t)
+    T = real(N)
+    return exp(-Complex{T}(im) * T(2) * T(π) * src.fcen * T(t))
 end
 
 function get_cutoff(src::ContinuousWaveData)
@@ -115,13 +116,15 @@ function _gaussian_bandwidth(width)
 end
 
 function eval_time_source(src::GaussianPulseData{numType}, t::Real) where {numType<:Number}
-    tt = t - src.peak_time
+    T = real(numType)
+    tt = T(t) - src.peak_time
     if tt > src.cutoff
-        return 0.0
+        return zero(Complex{T})
     end
-    amp = inv((-2 * pi * src.fcen * im))
-    return exp(-tt * tt / (2 * src.width * src.width)) *
-           exp(-2 * pi * im * src.fcen * tt) *
+    two_pi = T(2) * T(π)
+    amp = inv((-two_pi * src.fcen * im))
+    return exp(-tt * tt / (T(2) * src.width * src.width)) *
+           exp(-two_pi * Complex{T}(im) * src.fcen * tt) *
            amp
 end
 

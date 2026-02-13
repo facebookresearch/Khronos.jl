@@ -129,13 +129,11 @@ function initialize_field_component_array(
     sim::SimulationData,
     component::Field,
 )::AbstractArray
+    # P.5: Allocate raw GPU array without OffsetArray wrapping.
+    # Ghost cells are at raw indices 1 and N+2; interior at 2:(N+1).
+    # Kernels use shifted indices (ix+1, iy+1, iz+1) to access interior cells.
     array_dims = get_component_voxel_count(sim, component) .+ 2
-    return OffsetArray(
-        KernelAbstractions.zeros(backend_engine, backend_number, array_dims...),
-        -1,
-        -1,
-        -1,
-    )
+    return KernelAbstractions.zeros(backend_engine, backend_number, array_dims...)
 end
 
 """

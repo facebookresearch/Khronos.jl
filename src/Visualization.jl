@@ -295,9 +295,9 @@ function _pull_fields_from_device(sim::SimulationData, component::Field)
         # Single chunk, single process: pull directly from sim.fields
         current_fields = get_fields_from_component(sim, component)
         array_range = get_component_voxel_count(sim, component)
-        # Index out the ghost cells and collect to the host
+        # P.5: Field arrays are raw (no OffsetArray), interior starts at index 2
         current_fields = Base.Array(
-            collect(current_fields[1:array_range[1], 1:array_range[2], 1:array_range[3]]),
+            collect(current_fields[2:array_range[1]+1, 2:array_range[2]+1, 2:array_range[3]+1]),
         )
     else
         # Multi-chunk (or distributed): reassemble from chunk-local arrays

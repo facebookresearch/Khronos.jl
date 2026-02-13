@@ -456,11 +456,28 @@ end
     geometry_data::Union{GeometryData{N,T},Nothing} = nothing
     monitor_data::Vector{MonitorData} = MonitorData[] # todo figure out parameterizing abstract types
     timestep::Int = 0
+    sources_active::Bool = true  # P.3: flag to disable source arrays after shutoff
+
+    # P.2: Cached kernel objects to avoid repeated construction from non-const global
+    _cached_curl_kernel::Any = nothing
+    _cached_update_kernel::Any = nothing
+    _cached_curl_comp_kernel::Any = nothing  # Per-component split curl kernel
+    _cached_source_kernel::Any = nothing
+    _cached_dft_kernel::Any = nothing
+    _cached_dft_chunk_kernel::Any = nothing
 
     # Chunking support
     chunk_plan::Union{ChunkPlan,Nothing} = nothing
     chunk_data::Union{Vector{ChunkData{N,T,CT,BT}},Nothing} = nothing
     chunk_rank_assignment::Union{Vector{Int},Nothing} = nothing
+
+    # Precomputed halo copy operations for fast exchange (avoids per-step field lookups)
+    _halo_ops_H::Vector{Any} = Any[]
+    _halo_ops_E::Vector{Any} = Any[]
+
+    # CUDA Graph replay for post-source steady-state stepping
+    _cuda_graph_exec_H::Any = nothing  # CuGraphExec for H half-step (curl B + update H + halo)
+    _cuda_graph_exec_E::Any = nothing  # CuGraphExec for E half-step (curl D + update E + halo)
 end
 
 # Convenience wrapper

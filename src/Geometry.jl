@@ -66,7 +66,7 @@ function get_perm_inv(obj::Object, f::Field)
     if isnothing(perm)
         perm = get_material_perm(obj.material, f)
     end
-    return 1.0 / perm
+    return one(backend_number) / backend_number(perm)
 end
 
 function get_σ(obj::Object, f::Field)
@@ -75,20 +75,20 @@ function get_σ(obj::Object, f::Field)
         σ = get_material_conductivity(obj.material, f)
     end
     if isnothing(σ)
-        σ = 0.0
+        return zero(backend_number)
     end
-    return σ
+    return backend_number(σ)
 end
 
 """
 TODO: Eventually we want to set up a "default material" to call...
 """
 function get_perm_inv(obj::Nothing, ::Field)
-    1.0
+    one(backend_number)
 end
 
 function get_σ(obj::Nothing, ::Field)
-    0.0
+    zero(backend_number)
 end
 
 # ---------------------------------------------------------- #
@@ -119,6 +119,167 @@ function pull_geometry(
     end
 
     return
+end
+
+# ---------------------------------------------------------- #
+# Spatial acceleration for geometry initialization
+# ---------------------------------------------------------- #
+
+"""
+    _build_kdtree(geometry::Vector{Object})
+
+Build a KDTree from geometry objects for accelerated spatial queries.
+Returns the tree when all shapes share a single concrete type (avoiding
+dynamic dispatch inside the tree), or `nothing` for heterogeneous shapes
+(falls back to linear search).
+"""
+function _build_kdtree(geometry::Vector{Object})
+    isempty(geometry) && return nothing
+    ShapeType = typeof(geometry[1].shape)
+    for i in 2:length(geometry)
+        typeof(geometry[i].shape) === ShapeType || return nothing
+    end
+    shapes = ShapeType[obj.shape for obj in geometry]
+    return KDTree(shapes)
+end
+
+# Dispatch on KDTree vs Nothing for type stability in the hot loop.
+@inline _find_shape(::Nothing, point, geometry) = findfirst(point, geometry)
+@inline _find_shape(kdtree::KDTree, point, ::Vector{Object}) = findfirst(point, kdtree)
+
+# ── Rasterization approach ──────────────────────────────────────────
+# Instead of querying "which object is at this voxel?" for every voxel
+# (O(voxels × log(objects)) with KDTree), iterate over objects and paint
+# their voxels: O(sum of bounding_box_volumes). For scenes with many small
+# objects (like metalens pillars), this is orders of magnitude faster.
+
+"""
+    _rasterize_object!(shape, obj, f, perm_arr, σ_arr, xs, ys, zs)
+
+Paint the voxels belonging to a single object into the permittivity/conductivity
+arrays. Uses a function barrier (`where {S<:Shape}`) so Julia specializes on the
+concrete shape type, avoiding dynamic dispatch for `bounds()` and `∈` calls.
+"""
+@inline function _rasterize_object!(
+    shape::S, obj::Object, f::F,
+    perm_arr, σ_arr,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+) where {S<:Shape, F<:Field}
+    b = bounds(shape)
+    # Map bounding box to grid index ranges via binary search on sorted coords
+    ix_lo = max(searchsortedfirst(xs, b[1][1]), 1)
+    ix_hi = min(searchsortedlast(xs, b[2][1]), length(xs))
+    iy_lo = max(searchsortedfirst(ys, b[1][2]), 1)
+    iy_hi = min(searchsortedlast(ys, b[2][2]), length(ys))
+    iz_lo = max(searchsortedfirst(zs, b[1][3]), 1)
+    iz_hi = min(searchsortedlast(zs, b[2][3]), length(zs))
+
+    # Pre-compute material values (only when the corresponding array exists)
+    has_perm = !isnothing(perm_arr)
+    has_σ = !isnothing(σ_arr)
+    perm_val = has_perm ? get_perm_inv(obj, f) : zero(backend_number)
+    σ_val = has_σ ? get_σ(obj, f) : zero(backend_number)
+
+    for iz = iz_lo:iz_hi, iy = iy_lo:iy_hi, ix = ix_lo:ix_hi
+        point = SVector(xs[ix], ys[iy], zs[iz])
+        if point ∈ shape
+            if has_perm
+                @inbounds perm_arr[ix, iy, iz] = perm_val
+            end
+            if has_σ
+                @inbounds σ_arr[ix, iy, iz] = σ_val
+            end
+        end
+    end
+end
+
+"""
+    _rasterize_geometry_3d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
+
+Rasterize all geometry objects into the permittivity/conductivity arrays.
+Objects are painted in reverse order so that earlier objects (higher priority
+per `findfirst` convention) overwrite later ones.
+"""
+function _rasterize_geometry_3d!(
+    geometry::Vector{Object},
+    f::F,
+    perm_arr,
+    σ_arr,
+    xs::Vector{Float64},
+    ys::Vector{Float64},
+    zs::Vector{Float64},
+) where {F<:Field}
+    # Nothing to do if both arrays are absent
+    isnothing(perm_arr) && isnothing(σ_arr) && return
+
+    # Fill with free-space defaults
+    if !isnothing(perm_arr)
+        fill!(perm_arr, one(backend_number))
+    end
+    # σ_arr is already zeros from allocation
+
+    # Paint objects in reverse order (last → first) so earlier objects take priority
+    for gi in length(geometry):-1:1
+        obj = geometry[gi]
+        # Function barrier: obj.shape is abstractly typed (Shape), but
+        # _rasterize_object! dispatches on the concrete type via `where {S<:Shape}`.
+        # This costs one dispatch per object (~23K) rather than per voxel (~billions).
+        _rasterize_object!(obj.shape, obj, f, perm_arr, σ_arr, xs, ys, zs)
+    end
+end
+
+"""
+    _rasterize_object_2d!(shape, obj, f, perm_arr, σ_arr, xs, ys, zs)
+
+2D version of _rasterize_object! for 2D simulations.
+"""
+@inline function _rasterize_object_2d!(
+    shape::S, obj::Object, f::F,
+    perm_arr, σ_arr,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+) where {S<:Shape, F<:Field}
+    b = bounds(shape)
+    ix_lo = max(searchsortedfirst(xs, b[1][1]), 1)
+    ix_hi = min(searchsortedlast(xs, b[2][1]), length(xs))
+    iy_lo = max(searchsortedfirst(ys, b[1][2]), 1)
+    iy_hi = min(searchsortedlast(ys, b[2][2]), length(ys))
+
+    has_perm = !isnothing(perm_arr)
+    has_σ = !isnothing(σ_arr)
+    perm_val = has_perm ? get_perm_inv(obj, f) : zero(backend_number)
+    σ_val = has_σ ? get_σ(obj, f) : zero(backend_number)
+
+    for iy = iy_lo:iy_hi, ix = ix_lo:ix_hi
+        point = SVector(xs[ix], ys[iy], zs[1])
+        if point ∈ shape
+            if has_perm
+                @inbounds perm_arr[ix, iy] = perm_val
+            end
+            if has_σ
+                @inbounds σ_arr[ix, iy] = σ_val
+            end
+        end
+    end
+end
+
+function _rasterize_geometry_2d!(
+    geometry::Vector{Object},
+    f::F,
+    perm_arr,
+    σ_arr,
+    xs::Vector{Float64},
+    ys::Vector{Float64},
+    zs::Vector{Float64},
+) where {F<:Field}
+    isnothing(perm_arr) && isnothing(σ_arr) && return
+
+    if !isnothing(perm_arr)
+        fill!(perm_arr, one(backend_number))
+    end
+    for gi in length(geometry):-1:1
+        obj = geometry[gi]
+        _rasterize_object_2d!(obj.shape, obj, f, perm_arr, σ_arr, xs, ys, zs)
+    end
 end
 
 get_material_perm_comp(mat::Material, ::Union{Dx,Ex}) = mat.εx
@@ -185,6 +346,7 @@ function _precompute_coords(sim::SimulationData, gv::GridVolume)
 end
 
 function _write_geometry_3d!(
+    kdtree::KD,
     sim::SimulationData,
     geometry::Vector{Object},
     gv::GridVolume,
@@ -194,10 +356,10 @@ function _write_geometry_3d!(
     xs::Vector{Float64},
     ys::Vector{Float64},
     zs::Vector{Float64},
-) where {F<:Field}
+) where {F<:Field, KD}
     for iz = 1:gv.Nz, iy = 1:gv.Ny, ix = 1:gv.Nx
         point = SVector(xs[ix], ys[iy], zs[iz])
-        index = findfirst(point, geometry)
+        index = _find_shape(kdtree, point, geometry)
         obj = isnothing(index) ? nothing : geometry[index]
         if !isnothing(perm_arr)
             @inbounds perm_arr[ix, iy, iz] = get_perm_inv(obj, f)
@@ -209,6 +371,7 @@ function _write_geometry_3d!(
 end
 
 function _write_geometry_2d!(
+    kdtree::KD,
     sim::SimulationData,
     geometry::Vector{Object},
     gv::GridVolume,
@@ -218,10 +381,10 @@ function _write_geometry_2d!(
     xs::Vector{Float64},
     ys::Vector{Float64},
     zs::Vector{Float64},
-) where {F<:Field}
+) where {F<:Field, KD}
     for iy = 1:gv.Ny, ix = 1:gv.Nx
         point = SVector(xs[ix], ys[iy], zs[1])
-        index = findfirst(point, geometry)
+        index = _find_shape(kdtree, point, geometry)
         obj = isnothing(index) ? nothing : geometry[index]
         if !isnothing(perm_arr)
             @inbounds perm_arr[ix, iy] = get_perm_inv(obj, f)
@@ -239,45 +402,46 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         return
     end
 
+    T = backend_number
     ε_inv_x =
         needs_perm(geometry, Ex()) ?
-        zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
     ε_inv_y =
         needs_perm(geometry, Ey()) ?
-        zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
     ε_inv_z =
         needs_perm(geometry, Ez()) ?
-        zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
 
     σDx =
         needs_conductivities(geometry, Dx()) ?
-        zeros(get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
     σDy =
         needs_conductivities(geometry, Dy()) ?
-        zeros(get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
     σDz =
         needs_conductivities(geometry, Dz()) ?
-        zeros(get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
 
     μ_inv_x =
         needs_perm(geometry, Hx()) ?
-        zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
     μ_inv_y =
         needs_perm(geometry, Hy()) ?
-        zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
     μ_inv_z =
         needs_perm(geometry, Hz()) ?
-        zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
 
     σBx =
         needs_conductivities(geometry, Bx()) ?
-        zeros(get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
     σBy =
         needs_conductivities(geometry, By()) ?
-        zeros(get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
     σBz =
         needs_conductivities(geometry, Bz()) ?
-        zeros(get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+        zeros(T, get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
 
     # Pre-compute 1D coordinate arrays for each component to avoid
     # per-voxel allocations. Each coordinate is separable:
@@ -293,6 +457,14 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         (GridVolume(sim, Hz()), Bz(), μ_inv_z, σBz),
     )
 
+    # Use rasterization for geometry init: iterate over objects and paint their
+    # voxels, rather than iterating over all voxels and searching for objects.
+    # This is O(sum of bounding_box_volumes) vs O(voxels × log(objects)) with
+    # KDTree, which is dramatically faster for scenes with many small objects
+    # (e.g., metalens: 23K pillars × ~350 voxels each = 8M tests vs 600M+ tree
+    # traversals). Uses function barriers to avoid dynamic dispatch.
+    @info("  Rasterizing $(length(geometry)) geometry objects...")
+
     # Parallelize the 6 independent component loops via Threads.@spawn.
     # Each writes to separate arrays and reads from shared immutable geometry.
     # Gracefully degrades to serial when Threads.nthreads() == 1.
@@ -301,9 +473,9 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         xs, ys, zs = _precompute_coords(sim, gv)
         tasks[ci] = Threads.@spawn begin
             if sim.ndims == 3
-                _write_geometry_3d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+                _rasterize_geometry_3d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
             else
-                _write_geometry_2d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+                _rasterize_geometry_2d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
             end
         end
     end
@@ -321,7 +493,7 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         σDx = isnothing(σDx) ? σDx : backend_array(σDx),
         σDy = isnothing(σDy) ? σDy : backend_array(σDy),
         σDz = isnothing(σDz) ? σDz : backend_array(σDz),
-        μ_inv = 1.0, # todo add μ support
+        μ_inv = one(backend_number), # todo add μ support
         # right now it's either zeros or nothing...
         σBx = isnothing(σBx) ? σBx : backend_array(σBx),
         σBy = isnothing(σBy) ? σBy : backend_array(σBy),
@@ -331,7 +503,7 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
 end
 
 function init_geometry(sim::SimulationData, ::Nothing)
-    sim.geometry_data = GeometryData{backend_number,backend_array}(ε_inv = 1.0, μ_inv = 1.0)
+    sim.geometry_data = GeometryData{backend_number,backend_array}(ε_inv = one(backend_number), μ_inv = one(backend_number))
 end
 
 """ get_mat_conductivity_from_field()

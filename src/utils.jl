@@ -463,6 +463,70 @@ function compute_interpolation_weight(
 end
 
 """
+    _compute_interpolation_weight_fast(point, min_corner, max_corner, vol_size, ndims, Δ)
+
+Non-allocating version of `compute_interpolation_weight`. All arguments are
+scalars or `SVector{3}` — no heap allocations in the hot loop. Pre-compute
+`min_corner`, `max_corner`, `vol_size`, and `Δ` outside the loop.
+"""
+@inline function _compute_interpolation_weight_fast(
+    point::SVector{3,Float64},
+    min_corner::SVector{3,Float64},
+    max_corner::SVector{3,Float64},
+    vol_size::SVector{3,Float64},
+    ndims::Int,
+    Δ::SVector{3,Float64},
+)
+    weight = 1.0
+    for dim = 1:ndims
+        p = point[dim]
+        lo = min_corner[dim]
+        hi = max_corner[dim]
+        δ = Δ[dim]
+        sz = vol_size[dim]
+
+        if (p <= (lo - δ)) || (p >= (hi + δ))
+            return 0.0
+        elseif sz == 0.0
+            # point source in this dimension
+            weight *= 1 - min(abs(p - (lo + hi) * 0.5) / δ, 1.0)
+        elseif sz < δ
+            # subpixel volume
+            if (p >= lo) && (p <= hi)
+                weight *= 1 - 0.5 * (1.0 - (p - lo) / δ)^2 -
+                              0.5 * (1.0 - (hi - p) / δ)^2
+            elseif (p <= lo) && (abs(p - lo) < δ)
+                if (hi < (p + δ))
+                    weight *= 0.5 * (1.0 - (lo - p) / δ)^2 -
+                              0.5 * (1.0 - (hi - p) / δ)^2
+                else
+                    weight *= 0.5 * (1.0 - (lo - p) / δ)^2
+                end
+            elseif (p >= hi) && (abs(p - hi) < δ)
+                if (lo > (p - δ))
+                    weight *= 0.5 * (1.0 - (p - hi) / δ)^2 -
+                              0.5 * (1.0 - (p - lo) / δ)^2
+                else
+                    weight *= 0.5 * (1.0 - (p - hi) / δ)^2
+                end
+            end
+        else
+            # region spans beyond one pixel
+            if (p < lo) && (abs(p - lo) < δ)
+                weight *= 0.5 * (1.0 - (lo - p) / δ)^2
+            elseif (p >= lo) && (abs(p - lo) < δ)
+                weight *= 1 - 0.5 * (1.0 - (p - lo) / δ)^2
+            elseif (p <= hi) && (abs(p - hi) < δ)
+                weight *= 1 - 0.5 * (1.0 - (hi - p) / δ)^2
+            elseif (p > hi) && (abs(p - hi) < δ)
+                weight *= 0.5 * (1.0 - (p - hi) / δ)^2
+            end
+        end
+    end
+    return weight
+end
+
+"""
     check_3d_vector(vec::Vector{<:Real})
 
 TBW

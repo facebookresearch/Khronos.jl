@@ -789,11 +789,11 @@ end
 Allocate a field array sized for a chunk, with +2 ghost cells per dimension.
 """
 function _initialize_chunk_field_array(sim::SimulationData, component::Field, chunk_gv::GridVolume)
+    # P.5: Allocate raw GPU array without OffsetArray wrapping.
+    # Ghost cells are at raw indices 1 and N+2; interior at 2:(N+1).
+    # Kernels use shifted indices (ix+1, iy+1, iz+1) to access interior cells.
     dims = _get_chunk_component_voxel_count(sim, component, chunk_gv) .+ 2
-    return OffsetArray(
-        KernelAbstractions.zeros(backend_engine, backend_number, dims...),
-        -1, -1, -1,
-    )
+    return KernelAbstractions.zeros(backend_engine, backend_number, dims...)
 end
 
 """
@@ -894,18 +894,18 @@ scalar GeometryData.
 function _init_chunk_geometry(sim::SimulationData, spec::ChunkSpec, geometry::Union{Vector{Object},Nothing})
     pf = spec.physics
     if !pf.has_epsilon && !pf.has_mu && !pf.has_sigma_D && !pf.has_sigma_B
-        return GeometryData{backend_number,backend_array}(ε_inv = 1.0, μ_inv = 1.0)
+        return GeometryData{backend_number,backend_array}(ε_inv = one(backend_number), μ_inv = one(backend_number))
     end
 
     if isnothing(geometry) || isempty(geometry)
-        return GeometryData{backend_number,backend_array}(ε_inv = 1.0, μ_inv = 1.0)
+        return GeometryData{backend_number,backend_array}(ε_inv = one(backend_number), μ_inv = one(backend_number))
     end
 
     chunk_gv = spec.grid_volume
     ndims = sim.ndims
 
     # Allocate arrays sized to the chunk
-    alloc(comp, need) = need ? zeros(_get_chunk_component_voxel_count(sim, comp, chunk_gv)[1:ndims]...) : nothing
+    alloc(comp, need) = need ? zeros(backend_number, _get_chunk_component_voxel_count(sim, comp, chunk_gv)[1:ndims]...) : nothing
 
     ε_inv_x = alloc(Ex(), needs_perm(geometry, Ex()))
     ε_inv_y = alloc(Ey(), needs_perm(geometry, Ey()))
@@ -936,9 +936,9 @@ function _init_chunk_geometry(sim::SimulationData, spec::ChunkSpec, geometry::Un
         xs, ys, zs = _precompute_coords(sim, gv)
         tasks[ci] = Threads.@spawn begin
             if ndims == 3
-                _write_geometry_3d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+                _rasterize_geometry_3d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
             else
-                _write_geometry_2d!(sim, geometry, gv, f, perm_arr, σ_arr, xs, ys, zs)
+                _rasterize_geometry_2d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
             end
         end
     end
@@ -953,7 +953,7 @@ function _init_chunk_geometry(sim::SimulationData, spec::ChunkSpec, geometry::Un
         σDx = isnothing(σDx) ? σDx : backend_array(σDx),
         σDy = isnothing(σDy) ? σDy : backend_array(σDy),
         σDz = isnothing(σDz) ? σDz : backend_array(σDz),
-        μ_inv = 1.0,
+        μ_inv = one(backend_number),
         σBx = isnothing(σBx) ? σBx : backend_array(σBx),
         σBy = isnothing(σBy) ? σBy : backend_array(σBy),
         σBz = isnothing(σBz) ? σBz : backend_array(σBz),
@@ -1378,26 +1378,144 @@ function _halo_copy!(dst_parent::Array, dr, src_parent::Array, sr)
     @views dst_parent[dr[1], dr[2], dr[3]] .= src_parent[sr[1], sr[2], sr[3]]
 end
 
+# -------------------------------------------------------- #
+# Precomputed halo exchange for fast runtime execution
+# -------------------------------------------------------- #
+
+"""
+    HaloCopyOp{T}
+
+Precomputed halo copy operation. Stores all parameters needed for CUDA.unsafe_copy3d!
+so that runtime exchange avoids field lookups, size computations, and range calculations.
+"""
+struct HaloCopyOp{T}
+    dst_ptr::CUDA.CuPtr{T}
+    src_ptr::CUDA.CuPtr{T}
+    width::Int
+    height::Int
+    depth::Int
+    src_pos::NTuple{3,Int}
+    dst_pos::NTuple{3,Int}
+    src_pitch::Int
+    src_height::Int
+    dst_pitch::Int
+    dst_height::Int
+end
+
+"""
+    precompute_halo_ops!(sim::SimulationData)
+
+Precompute all halo copy operations for H and E field groups.
+Called once during prepare_simulation! to avoid per-step field lookups.
+"""
+function precompute_halo_ops!(sim::SimulationData)
+    isnothing(sim.chunk_data) && return
+    length(sim.chunk_data) <= 1 && return
+
+    sim._halo_ops_H = _precompute_halo_ops_for_group(sim, :H)
+    sim._halo_ops_E = _precompute_halo_ops_for_group(sim, :E)
+end
+
+function _precompute_halo_ops_for_group(sim::SimulationData, field_group::Symbol)
+    components = _field_components_for_group(field_group)
+    T = eltype(sim.chunk_data[1].fields.fEx)
+    ops = HaloCopyOp{T}[]
+    rank = is_distributed() ? mpi_rank() : 0
+    assignment = sim.chunk_rank_assignment
+
+    for chunk in sim.chunk_data
+        for conn in chunk.halo_send
+            if !isnothing(assignment) && assignment[conn.dst_chunk_id] != rank
+                continue
+            end
+            idx = _local_chunk_index(sim, conn.dst_chunk_id)
+            isnothing(idx) && continue
+            dst = sim.chunk_data[idx]
+            for comp in components
+                src_f = _get_chunk_field(chunk, comp)
+                dst_f = _get_chunk_field(dst, comp)
+                if !isnothing(src_f) && !isnothing(dst_f)
+                    src_parent = parent(src_f)
+                    dst_parent = parent(dst_f)
+                    src_dims = size(src_parent) .- 2
+                    dst_dims = size(dst_parent) .- 2
+                    sr = _component_send_range(src_dims, conn.axis, conn.src_range)
+                    dr = _component_recv_range(dst_dims, conn.axis, conn.dst_range)
+                    sr_shifted = (sr[1] .+ 1, sr[2] .+ 1, sr[3] .+ 1)
+                    dr_shifted = (dr[1] .+ 1, dr[2] .+ 1, dr[3] .+ 1)
+
+                    width  = length(sr_shifted[1])
+                    height = length(sr_shifted[2])
+                    depth  = length(sr_shifted[3])
+                    src_Nx = size(src_parent, 1)
+                    src_Ny = size(src_parent, 2)
+                    dst_Nx = size(dst_parent, 1)
+                    dst_Ny = size(dst_parent, 2)
+
+                    push!(ops, HaloCopyOp{T}(
+                        pointer(dst_parent), pointer(src_parent),
+                        width, height, depth,
+                        (first(sr_shifted[1]), first(sr_shifted[2]), first(sr_shifted[3])),
+                        (first(dr_shifted[1]), first(dr_shifted[2]), first(dr_shifted[3])),
+                        src_Nx * sizeof(T), src_Ny,
+                        dst_Nx * sizeof(T), dst_Ny,
+                    ))
+                end
+            end
+        end
+    end
+    return ops
+end
+
+"""
+    _exchange_halos_precomputed!(ops)
+
+Execute precomputed halo copy operations. Minimal CPU overhead per operation.
+"""
+function _exchange_halos_precomputed!(ops)
+    @inbounds for op in ops
+        CUDA.unsafe_copy3d!(
+            op.dst_ptr, CUDA.DeviceMemory,
+            op.src_ptr, CUDA.DeviceMemory,
+            op.width, op.height, op.depth;
+            srcPos = op.src_pos,
+            dstPos = op.dst_pos,
+            srcPitch = op.src_pitch,
+            srcHeight = op.src_height,
+            dstPitch = op.dst_pitch,
+            dstHeight = op.dst_height,
+            async = true,
+        )
+    end
+end
+
 """
     exchange_halos!(sim, field_group::Symbol)
 
 Exchange ghost cells between chunks for a given field group (:B, :H, :D, :E).
 Dispatches to local-only or MPI paths as appropriate.
+Uses precomputed copy operations when available for minimum CPU overhead.
 """
 function exchange_halos!(sim::SimulationData, field_group::Symbol)
     isnothing(sim.chunk_data) && return
     length(sim.chunk_data) <= 1 && !is_distributed() && return
 
-    components = _field_components_for_group(field_group)
-
     if !is_distributed()
-        _exchange_halos_local!(sim, components)
-        if backend_engine isa CUDABackend
-            CUDA.synchronize()
+        # Use precomputed fast path if available
+        ops = field_group == :H ? sim._halo_ops_H : sim._halo_ops_E
+        if !isempty(ops)
+            _exchange_halos_precomputed!(ops)
+        else
+            components = _field_components_for_group(field_group)
+            _exchange_halos_local!(sim, components)
         end
+        # No explicit synchronize needed: all halo copies (CUDA.unsafe_copy3d!)
+        # and subsequent kernel launches use the same default CUDA stream,
+        # so stream ordering guarantees copies complete before kernels execute.
         return
     end
 
+    components = _field_components_for_group(field_group)
     _exchange_halos_mpi!(sim, components)
 end
 

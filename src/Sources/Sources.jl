@@ -45,28 +45,40 @@ function assemble_sources(sim::SimulationData, source::Source)
 
     src_volume = get_source_volume(source)
     source_objects = SourceData{complex_backend_array}[]
+
+    # Pre-compute constants outside the per-component loop
+    amplitude = get_amplitude(source)
+    min_corner = SVector{3}(get_min_corner(src_volume)...)
+    max_corner = SVector{3}(get_max_corner(src_volume)...)
+    vol_size = SVector{3}(src_volume.size...)
+    Δx = isnothing(sim.Δx) ? 0.0 : Float64(sim.Δx)
+    Δy = isnothing(sim.Δy) ? 0.0 : Float64(sim.Δy)
+    Δz = isnothing(sim.Δz) ? 0.0 : Float64(sim.Δz)
+    Δ = SVector{3}(Δx, Δy, Δz)
+    ndims = sim.ndims::Int
+
     for component in get_source_components(source)
         # create the GridVolume
         gv = GridVolume(sim, src_volume, component)
 
-        # Fill in the amplitude data
-        amplitude_data =
-            zeros(complex_backend_number, ([gv.Nx, gv.Ny, gv.Nz][1:sim.ndims])...)
-        for i in CartesianIndices(amplitude_data)
-            point = grid_volume_idx_to_point(sim, gv, i)
-            weight = compute_interpolation_weight(
-                point,
-                src_volume,
-                sim.ndims,
-                sim.Δx,
-                sim.Δy,
-                sim.Δz,
-            )
-            amplitude_data[i] =
-                weight *
-                get_amplitude(source) *
-                get_source_profile(source, point, component)
-        end
+        # Pre-compute per-component constants
+        pol_factor = _get_source_pol_factor(source, component)
+
+        # Pre-compute the component origin and grid volume origin ONCE
+        # (avoids per-voxel type-unstable access to sim.Δx/Δy/Δz/cell_size/cell_center)
+        origin = SVector{3,Float64}(get_component_origin(sim, gv.component)...)
+        gv_origin = get_min_corner(gv)
+        cc3 = Float64(sim.cell_center[3])
+
+        # Build amplitude data on CPU, then bulk-transfer to GPU.
+        # Uses a function barrier (_fill_amplitude_data!) so Julia can specialize
+        # on the concrete source type and avoid dynamic dispatch per voxel.
+        dims = ([gv.Nx, gv.Ny, gv.Nz][1:ndims])
+        amplitude_data_cpu = zeros(Complex{Float64}, dims...)
+        _fill_amplitude_data!(amplitude_data_cpu, source, component, pol_factor,
+            amplitude, origin, gv_origin, cc3, Δx, Δy, Δz,
+            min_corner, max_corner, vol_size, ndims, Δ)
+        amplitude_data = complex_backend_array(complex_backend_number.(amplitude_data_cpu))
         push!(
             source_objects,
             SourceData{complex_backend_array}(
@@ -80,11 +92,83 @@ function assemble_sources(sim::SimulationData, source::Source)
     return source_objects
 end
 
+"""
+    _fill_amplitude_data!(data, source, component, ...)
+
+Function barrier: Julia specializes this on the concrete type of `source`,
+eliminating dynamic dispatch overhead in the inner loop (~5x speedup for
+PlaneWaveSource).
+"""
+function _fill_amplitude_data!(
+    amplitude_data_cpu::AbstractArray{Complex{Float64}},
+    source, component, pol_factor, amplitude,
+    origin::SVector{3,Float64}, gv_origin, cc3::Float64,
+    Δx::Float64, Δy::Float64, Δz::Float64,
+    min_corner::SVector{3,Float64}, max_corner::SVector{3,Float64},
+    vol_size::SVector{3,Float64}, ndims::Int, Δ::SVector{3,Float64},
+)
+    gv_start_1 = gv_origin[1]
+    gv_start_2 = gv_origin[2]
+    gv_start_3 = gv_origin[3]
+    for i in CartesianIndices(amplitude_data_cpu)
+        t = Tuple(i)
+        ix = t[1]
+        iy = length(t) >= 2 ? t[2] : 0
+        iz = length(t) >= 3 ? t[3] : 0
+        # Inline grid_volume_idx_to_point to avoid type-unstable sim field access
+        px = origin[1] + (ix + gv_start_1 - 2) * Δx
+        py = origin[2] + (iy + gv_start_2 - 2) * Δy
+        pz_raw = origin[3] + (iz + gv_start_3 - 2) * Δz
+        pz = (isinf(pz_raw) || isnan(pz_raw)) ? cc3 : pz_raw
+        point = SVector(px, py, pz)
+        weight = _compute_interpolation_weight_fast(
+            point, min_corner, max_corner, vol_size, ndims, Δ,
+        )
+        profile = _get_source_profile_fast(source, point, component, pol_factor)
+        amplitude_data_cpu[i] = weight * amplitude * profile
+    end
+end
+
+# ── Fast source profile helpers ─────────────────────────────────────────────
+# These pre-compute loop-invariant values and avoid per-voxel allocations.
+
+# Default: pol_factor is unused, just return 1.0
+_get_source_pol_factor(::Source, ::Field) = 1.0
+_get_source_pol_factor(source::PlaneWaveSourceData, component::Field) =
+    get_planewave_polarization_scaling(source, component)
+
+# PlaneWaveSource: only the phase varies per-voxel; pol_factor is pre-computed
+@inline function _get_source_profile_fast(
+    source::PlaneWaveSourceData, point::SVector{3,Float64},
+    ::Field, pol_factor::Number,
+)
+    kv = source.k_vector
+    kx = Float64(kv[1]); ky = Float64(kv[2]); kz = Float64(kv[3])
+    phase = (point[1] * kx + point[2] * ky + point[3] * kz) * Float64(source.k)
+    return pol_factor * exp(-im * phase)
+end
+
+# UniformSource: constant profile
+@inline function _get_source_profile_fast(
+    ::UniformSourceData, ::SVector{3,Float64}, ::Field, ::Number,
+)
+    return 1.0
+end
+
+# Fallback for other source types: convert SVector to Vector (allocates, but
+# only for uncommon source types like GaussianBeam/EquivalentSource)
+@inline function _get_source_profile_fast(
+    source::Source, point::SVector{3,Float64}, component::Field, ::Number,
+)
+    return get_source_profile(source, collect(point), component)
+end
+
 # ---------------------------------------------------------- #
 # Source stepping routines
 # ---------------------------------------------------------- #
 
-get_source_offset(gv) = (gv.start_idx[1] - 1, gv.start_idx[2] - 1, gv.start_idx[3] - 1)
+# P.5: Field arrays are raw (no OffsetArray), so offset includes +1 for ghost cell
+get_source_offset(gv) = (gv.start_idx[1], gv.start_idx[2], gv.start_idx[3])
 
 function step_source!(
     current_source::SourceData,
@@ -93,7 +177,7 @@ function step_source!(
     t::Real,
 )
     if current_source.component isa typeof(component)
-        source_kernel = update_source!(backend_engine)
+        source_kernel = sim._cached_source_kernel
 
         current_source_array = get_source_from_field_component(sim, component)
         spatial_amplitude = current_source.amplitude_data
@@ -120,12 +204,13 @@ to chunk-local coordinates.
 function step_source_chunk!(
     current_source::SourceData,
     chunk::ChunkData,
+    sim::SimulationData,
     component::Union{E,H},
     t::Real,
     single_chunk::Bool,
 )
     if current_source.component isa typeof(component)
-        source_kernel = update_source!(backend_engine)
+        source_kernel = sim._cached_source_kernel
 
         current_source_array = get_source_from_field_component(chunk, component)
         isnothing(current_source_array) && return
@@ -138,11 +223,12 @@ function step_source_chunk!(
             offset_index = get_source_offset(current_source.gv)
         else
             # Multi-chunk: adjust offset to chunk-local coordinates
+            # P.5: +1 for ghost cell in raw field arrays (no OffsetArray)
             chunk_start = chunk.spec.grid_volume.start_idx
             offset_index = (
-                current_source.gv.start_idx[1] - chunk_start[1],
-                current_source.gv.start_idx[2] - chunk_start[2],
-                current_source.gv.start_idx[3] - chunk_start[3],
+                current_source.gv.start_idx[1] - chunk_start[1] + 1,
+                current_source.gv.start_idx[2] - chunk_start[2] + 1,
+                current_source.gv.start_idx[3] - chunk_start[3] + 1,
             )
         end
 
@@ -163,7 +249,7 @@ function step_sources!(sim::SimulationData, component::Union{E,H}, t::Real)
     single_chunk = length(sim.chunk_data) == 1
     for chunk in sim.chunk_data
         for cs in chunk.source_data
-            step_source_chunk!(cs, chunk, component, t, single_chunk)
+            step_source_chunk!(cs, chunk, sim, component, t, single_chunk)
         end
     end
     return
