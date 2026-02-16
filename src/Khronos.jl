@@ -12,6 +12,7 @@ using LinearAlgebra
 using OffsetArrays
 using StaticArrays
 using MPI
+using NCCL
 import VectorModesolver
 
 macro status(exs)

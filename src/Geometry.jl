@@ -165,14 +165,34 @@ concrete shape type, avoiding dynamic dispatch for `bounds()` and `∈` calls.
     perm_arr, σ_arr,
     xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
 ) where {S<:Shape, F<:Field}
+    _rasterize_object_yrange!(shape, obj, f, perm_arr, σ_arr,
+        xs, ys, zs, 1, length(ys))
+end
+
+"""
+    _rasterize_object_yrange!(shape, obj, f, perm_arr, σ_arr, xs, ys, zs, iy_start, iy_end)
+
+Paint voxels of a single object within a restricted y-index range [iy_start, iy_end].
+Used by the y-range parallel rasterization path. Each y-range writes to disjoint
+array slices, so concurrent calls with different y-ranges are data-race free.
+"""
+@inline function _rasterize_object_yrange!(
+    shape::S, obj::Object, f::F,
+    perm_arr, σ_arr,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+    iy_start::Int, iy_end::Int,
+) where {S<:Shape, F<:Field}
     b = bounds(shape)
     # Map bounding box to grid index ranges via binary search on sorted coords
     ix_lo = max(searchsortedfirst(xs, b[1][1]), 1)
     ix_hi = min(searchsortedlast(xs, b[2][1]), length(xs))
-    iy_lo = max(searchsortedfirst(ys, b[1][2]), 1)
-    iy_hi = min(searchsortedlast(ys, b[2][2]), length(ys))
+    iy_lo = max(searchsortedfirst(ys, b[1][2]), iy_start)
+    iy_hi = min(searchsortedlast(ys, b[2][2]), iy_end)
     iz_lo = max(searchsortedfirst(zs, b[1][3]), 1)
     iz_hi = min(searchsortedlast(zs, b[2][3]), length(zs))
+
+    # Skip if no overlap with this y-range or bounding box is empty
+    (ix_lo > ix_hi || iy_lo > iy_hi || iz_lo > iz_hi) && return
 
     # Pre-compute material values (only when the corresponding array exists)
     has_perm = !isnothing(perm_arr)
@@ -403,45 +423,28 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
     end
 
     T = backend_number
-    ε_inv_x =
-        needs_perm(geometry, Ex()) ?
-        zeros(T, get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
-    ε_inv_y =
-        needs_perm(geometry, Ey()) ?
-        zeros(T, get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
-    ε_inv_z =
-        needs_perm(geometry, Ez()) ?
-        zeros(T, get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+    # Use undef allocation instead of zeros() to avoid redundant zeroing.
+    # The arrays are filled with the free-space default (1.0 for permittivity,
+    # 0.0 for conductivity) inside each task, distributing page faults across
+    # all threads for much faster initialization.
+    _alloc(need, comp) = need ?
+        Array{T}(undef, get_component_voxel_count(sim, comp)[1:sim.ndims]...) : nothing
 
-    σDx =
-        needs_conductivities(geometry, Dx()) ?
-        zeros(T, get_component_voxel_count(sim, Ex())[1:sim.ndims]...) : nothing
-    σDy =
-        needs_conductivities(geometry, Dy()) ?
-        zeros(T, get_component_voxel_count(sim, Ey())[1:sim.ndims]...) : nothing
-    σDz =
-        needs_conductivities(geometry, Dz()) ?
-        zeros(T, get_component_voxel_count(sim, Ez())[1:sim.ndims]...) : nothing
+    ε_inv_x = _alloc(needs_perm(geometry, Ex()), Ex())
+    ε_inv_y = _alloc(needs_perm(geometry, Ey()), Ey())
+    ε_inv_z = _alloc(needs_perm(geometry, Ez()), Ez())
 
-    μ_inv_x =
-        needs_perm(geometry, Hx()) ?
-        zeros(T, get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
-    μ_inv_y =
-        needs_perm(geometry, Hy()) ?
-        zeros(T, get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
-    μ_inv_z =
-        needs_perm(geometry, Hz()) ?
-        zeros(T, get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+    σDx = _alloc(needs_conductivities(geometry, Dx()), Ex())
+    σDy = _alloc(needs_conductivities(geometry, Dy()), Ey())
+    σDz = _alloc(needs_conductivities(geometry, Dz()), Ez())
 
-    σBx =
-        needs_conductivities(geometry, Bx()) ?
-        zeros(T, get_component_voxel_count(sim, Hx())[1:sim.ndims]...) : nothing
-    σBy =
-        needs_conductivities(geometry, By()) ?
-        zeros(T, get_component_voxel_count(sim, Hy())[1:sim.ndims]...) : nothing
-    σBz =
-        needs_conductivities(geometry, Bz()) ?
-        zeros(T, get_component_voxel_count(sim, Hz())[1:sim.ndims]...) : nothing
+    μ_inv_x = _alloc(needs_perm(geometry, Hx()), Hx())
+    μ_inv_y = _alloc(needs_perm(geometry, Hy()), Hy())
+    μ_inv_z = _alloc(needs_perm(geometry, Hz()), Hz())
+
+    σBx = _alloc(needs_conductivities(geometry, Bx()), Hx())
+    σBy = _alloc(needs_conductivities(geometry, By()), Hy())
+    σBz = _alloc(needs_conductivities(geometry, Bz()), Hz())
 
     # Pre-compute 1D coordinate arrays for each component to avoid
     # per-voxel allocations. Each coordinate is separable:
@@ -463,26 +466,71 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
     # KDTree, which is dramatically faster for scenes with many small objects
     # (e.g., metalens: 23K pillars × ~350 voxels each = 8M tests vs 600M+ tree
     # traversals). Uses function barriers to avoid dynamic dispatch.
-    @info("  Rasterizing $(length(geometry)) geometry objects...")
+    # For 3D: spawn tasks across (component, y-range) pairs for better thread
+    # utilization. The original 6-task approach (one per Yee component) uses at
+    # most 6 threads; splitting each component's y-axis into chunks gives up to
+    # 6 × nchunks tasks, utilizing all available threads. Each y-range writes to
+    # disjoint array slices, so concurrent tasks are data-race free.
+    nthreads = Threads.nthreads()
+    tasks = Task[]
 
-    # Parallelize the 6 independent component loops via Threads.@spawn.
-    # Each writes to separate arrays and reads from shared immutable geometry.
-    # Gracefully degrades to serial when Threads.nthreads() == 1.
-    tasks = Vector{Task}(undef, length(components))
     for (ci, (gv, f, perm_arr, σ_arr)) in enumerate(components)
+        # Skip components that don't need any arrays
+        isnothing(perm_arr) && isnothing(σ_arr) && continue
+
         xs, ys, zs = _precompute_coords(sim, gv)
-        tasks[ci] = Threads.@spawn begin
-            if sim.ndims == 3
-                _rasterize_geometry_3d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
-            else
-                _rasterize_geometry_2d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
+
+        if sim.ndims == 3
+            # Use actual array dimensions for fill loops and y-range chunking.
+            # GridVolume coordinate counts (length(xs/ys/zs)) can differ from
+            # array dimensions (get_component_voxel_count) due to Yee staggering.
+            ref_arr = something(perm_arr, σ_arr)
+            arr_nx, arr_ny, arr_nz = size(ref_arr)
+
+            # Truncate coordinate arrays to match array dimensions so that
+            # _rasterize_object_yrange! indices stay within array bounds.
+            xs_t = length(xs) > arr_nx ? xs[1:arr_nx] : xs
+            ys_t = length(ys) > arr_ny ? ys[1:arr_ny] : ys
+            zs_t = length(zs) > arr_nz ? zs[1:arr_nz] : zs
+
+            # Split y into chunks; at least 8 y-values per chunk to avoid overhead
+            nchunks = max(1, min(nthreads, arr_ny ÷ 8))
+            chunk_size = cld(arr_ny, nchunks)
+
+            for ch in 1:nchunks
+                iy_start = (ch - 1) * chunk_size + 1
+                iy_end = min(ch * chunk_size, arr_ny)
+                push!(tasks, Threads.@spawn begin
+                    # Fill this y-range with free-space defaults (distributes
+                    # page faults across threads instead of single-threaded fill!)
+                    if !isnothing(perm_arr)
+                        for iz in 1:arr_nz, iy in iy_start:iy_end, ix in 1:arr_nx
+                            perm_arr[ix, iy, iz] = one(T)
+                        end
+                    end
+                    if !isnothing(σ_arr)
+                        for iz in 1:arr_nz, iy in iy_start:iy_end, ix in 1:size(σ_arr, 1)
+                            σ_arr[ix, iy, iz] = zero(T)
+                        end
+                    end
+                    # Rasterize objects within this y-range
+                    for gi in length(geometry):-1:1
+                        obj = geometry[gi]
+                        _rasterize_object_yrange!(obj.shape, obj, f,
+                            perm_arr, σ_arr, xs_t, ys_t, zs_t, iy_start, iy_end)
+                    end
+                end)
             end
+        else
+            # 2D path: single task per component
+            push!(tasks, Threads.@spawn begin
+                _rasterize_geometry_2d!(geometry, f, perm_arr, σ_arr, xs, ys, zs)
+            end)
         end
     end
     for t in tasks
         wait(t)
     end
-
 
     # Construct geometry data structure. Importantly, this will transfer all
     # data from the host to the device.

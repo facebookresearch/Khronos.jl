@@ -462,6 +462,9 @@ end
     _cached_curl_kernel::Any = nothing
     _cached_update_kernel::Any = nothing
     _cached_curl_comp_kernel::Any = nothing  # Per-component split curl kernel
+    _cached_update_comp_kernel::Any = nothing  # Per-component split update kernel
+    _cached_fused_kernel::Any = nothing       # Fused curl+update kernel (no PML)
+    _cached_fused_pml_kernel::Any = nothing  # Fused curl+update kernel (PML)
     _cached_source_kernel::Any = nothing
     _cached_dft_kernel::Any = nothing
     _cached_dft_chunk_kernel::Any = nothing

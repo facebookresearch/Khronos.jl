@@ -41,6 +41,39 @@ is_distributed() = _mpi_initialized[] && _mpi_size[] > 1
 is_root() = mpi_rank() == 0
 
 # -------------------------------------------------------- #
+# NCCL state management
+# -------------------------------------------------------- #
+
+const _nccl_initialized = Ref(false)
+const _nccl_comm = Ref{Any}(nothing)
+
+"""
+    init_nccl!()
+
+Initialize NCCL communicator for GPU-direct halo exchange. Requires MPI to be
+initialized first. Rank 0 generates a UniqueID, broadcasts it via MPI, then all
+ranks create their NCCL communicator. Idempotent.
+"""
+function init_nccl!()
+    if !_nccl_initialized[] && is_distributed() && backend_engine isa CUDABackend
+        # Rank 0 generates UniqueID, broadcasts via MPI
+        if is_root()
+            id = NCCL.UniqueID()
+        else
+            id = nothing
+        end
+        id = MPI.bcast(id, 0, mpi_comm())
+        _nccl_comm[] = NCCL.Communicator(mpi_size(), mpi_rank(); unique_id=id)
+        _nccl_initialized[] = true
+        if is_root()
+            @info("  NCCL initialized: $(mpi_size()) ranks, NCCL v$(NCCL.version())")
+        end
+    end
+end
+
+nccl_initialized() = _nccl_initialized[]
+
+# -------------------------------------------------------- #
 # Device assignment
 # -------------------------------------------------------- #
 
@@ -64,21 +97,53 @@ end
 """
     assign_chunks_to_ranks(plan::ChunkPlan, nranks::Int)::Vector{Int}
 
-Greedy load-balanced assignment of chunks to MPI ranks using `chunk_cost`.
-Returns a vector mapping chunk_id -> rank (0-indexed).
-Deterministic: all ranks get the same result for the same input.
+Spatial assignment of chunks to MPI ranks that minimizes cross-rank halo
+connections. Sorts chunks by their center position along the longest grid axis,
+then partitions into nranks bands by cumulative cost.
 """
 function assign_chunks_to_ranks(plan::ChunkPlan, nranks::Int)::Vector{Int}
     costs = [chunk_cost(spec.physics,
                 spec.grid_volume.Nx * spec.grid_volume.Ny * max(1, spec.grid_volume.Nz))
              for spec in plan.chunks]
     assignment = Vector{Int}(undef, plan.total_chunks)
-    rank_load = zeros(Float64, nranks)
-    for chunk_id in sortperm(costs, rev=true)
-        target = argmin(rank_load) - 1  # 0-indexed rank
-        assignment[chunk_id] = target
-        rank_load[target + 1] += costs[chunk_id]
+
+    if nranks == 1
+        fill!(assignment, 0)
+        return assignment
     end
+
+    # Find the axis with greatest span across chunk centers
+    centers = [Float64.((spec.grid_volume.start_idx .+ spec.grid_volume.end_idx) ./ 2)
+               for spec in plan.chunks]
+    best_axis = 1
+    best_span = 0.0
+    for axis in 1:3
+        cmin = minimum(c[axis] for c in centers)
+        cmax = maximum(c[axis] for c in centers)
+        span = cmax - cmin
+        if span > best_span
+            best_span = span
+            best_axis = axis
+        end
+    end
+
+    # Sort chunks by center position along the best axis
+    sorted_ids = sortperm([centers[i][best_axis] for i in 1:plan.total_chunks])
+
+    # Partition into nranks bands by cumulative cost (spatial bisection)
+    total_cost = sum(costs)
+    target_per_rank = total_cost / nranks
+    cumulative = 0.0
+    current_rank = 0
+    for chunk_id in sorted_ids
+        assignment[chunk_id] = current_rank
+        cumulative += costs[chunk_id]
+        if cumulative >= target_per_rank && current_rank < nranks - 1
+            current_rank += 1
+            cumulative = 0.0
+        end
+    end
+
     return assignment
 end
 
@@ -234,14 +299,223 @@ end
 """
     _exchange_halos_mpi!(sim::SimulationData, components)
 
-MPI halo exchange protocol (5 phases):
+Cross-rank halo exchange. Dispatches to NCCL (GPU-direct) when available,
+otherwise falls back to MPI host-staging protocol.
+"""
+function _exchange_halos_mpi!(sim::SimulationData, components)
+    if nccl_initialized()
+        _exchange_halos_nccl!(sim, components)
+    else
+        _exchange_halos_mpi_host_staging!(sim, components)
+    end
+end
+
+# -------------------------------------------------------- #
+# NCCL GPU-direct halo exchange (precomputed, aggregated)
+# -------------------------------------------------------- #
+
+# Precomputed pack/unpack operation for a single field slice
+struct NCCLSliceOp
+    chunk_idx::Int                        # index into sim.chunk_data
+    conn_idx::Int                         # index into chunk.halo_send or halo_recv
+    agg_offset::Int                       # offset into aggregate buffer
+    n_elements::Int                       # number of elements in this slice
+    ranges::NTuple{3,UnitRange{Int}}      # shifted ranges for field array
+    shape::NTuple{3,Int}                  # shape for reshape
+end
+
+# Precomputed state per field group (H or E)
+struct NCCLFieldGroupState
+    send_ops::Vector{Vector{NCCLSliceOp}}   # send_ops[comp_idx][op_idx] per component
+    recv_ops::Vector{Vector{NCCLSliceOp}}   # recv_ops[comp_idx][op_idx] per component
+    total_send::Int                         # total elements in aggregate send buffer
+    total_recv::Int                         # total elements in aggregate recv buffer
+    send_buf::Any                           # CuVector aggregate send buffer
+    recv_buf::Any                           # CuVector aggregate recv buffer
+    remote_rank::Int                        # the remote rank (-1 if no remote connections)
+end
+
+# Module-level precomputed state
+const _nccl_state_H = Ref{Union{NCCLFieldGroupState,Nothing}}(nothing)
+const _nccl_state_E = Ref{Union{NCCLFieldGroupState,Nothing}}(nothing)
+
+"""
+    precompute_nccl_exchange!(sim::SimulationData)
+
+Precompute NCCL halo exchange state: sorted connections, aggregate GPU buffers,
+and pack/unpack operations. Called once during initialization.
+"""
+function precompute_nccl_exchange!(sim::SimulationData)
+    rank = mpi_rank()
+    assignment = sim.chunk_rank_assignment
+    h_comps = (Hx(), Hy(), Hz())
+    e_comps = (Ex(), Ey(), Ez())
+
+    # Collect and sort remote connections by (src_chunk_id, dst_chunk_id)
+    remote_sends = NTuple{4,Int}[]  # (src_id, dst_id, chunk_idx, conn_idx)
+    remote_recvs = NTuple{4,Int}[]
+    remote_rank = -1
+    for (chunk_idx, chunk) in enumerate(sim.chunk_data)
+        for (ci, conn) in enumerate(chunk.halo_send)
+            r = assignment[conn.dst_chunk_id]
+            r == rank && continue
+            push!(remote_sends, (conn.src_chunk_id, conn.dst_chunk_id, chunk_idx, ci))
+            remote_rank = r
+        end
+        for (ci, conn) in enumerate(chunk.halo_recv)
+            r = assignment[conn.src_chunk_id]
+            r == rank && continue
+            push!(remote_recvs, (conn.src_chunk_id, conn.dst_chunk_id, chunk_idx, ci))
+            remote_rank = r
+        end
+    end
+    sort!(remote_sends, by=x->(x[1], x[2]))
+    sort!(remote_recvs, by=x->(x[1], x[2]))
+
+    # Build state for each field group
+    for (comps, state_ref) in ((h_comps, _nccl_state_H), (e_comps, _nccl_state_E))
+        # Compute aggregate send buffer layout
+        send_ops_per_comp = [NCCLSliceOp[] for _ in 1:3]
+        agg_offset = 0
+        for (src_id, dst_id, chunk_idx, ci) in remote_sends
+            chunk = sim.chunk_data[chunk_idx]
+            conn = chunk.halo_send[ci]
+            for (comp_idx, comp) in enumerate(comps)
+                src_f = _get_chunk_field(chunk, comp)
+                isnothing(src_f) && continue
+                src_parent = parent(src_f)
+                src_dims = size(src_parent) .- 2
+                sr = _component_send_range(src_dims, conn.axis, conn.src_range)
+                sr_shifted = (sr[1] .+ 1, sr[2] .+ 1, sr[3] .+ 1)
+                n = length(sr[1]) * length(sr[2]) * length(sr[3])
+                shape = (length(sr_shifted[1]), length(sr_shifted[2]), length(sr_shifted[3]))
+                push!(send_ops_per_comp[comp_idx],
+                    NCCLSliceOp(chunk_idx, ci, agg_offset, n, sr_shifted, shape))
+                agg_offset += n
+            end
+        end
+        total_send = agg_offset
+
+        # Compute aggregate recv buffer layout
+        recv_ops_per_comp = [NCCLSliceOp[] for _ in 1:3]
+        agg_offset = 0
+        for (src_id, dst_id, chunk_idx, ci) in remote_recvs
+            chunk = sim.chunk_data[chunk_idx]
+            conn = chunk.halo_recv[ci]
+            for (comp_idx, comp) in enumerate(comps)
+                dst_f = _get_chunk_field(chunk, comp)
+                isnothing(dst_f) && continue
+                dst_parent = parent(dst_f)
+                dst_dims = size(dst_parent) .- 2
+                dr = _component_recv_range(dst_dims, conn.axis, conn.dst_range)
+                dr_shifted = (dr[1] .+ 1, dr[2] .+ 1, dr[3] .+ 1)
+                shape = (length(dr_shifted[1]), length(dr_shifted[2]), length(dr_shifted[3]))
+                n = prod(shape)
+                push!(recv_ops_per_comp[comp_idx],
+                    NCCLSliceOp(chunk_idx, ci, agg_offset, n, dr_shifted, shape))
+                agg_offset += n
+            end
+        end
+        total_recv = agg_offset
+
+        # Allocate aggregate GPU buffers
+        send_buf = total_send > 0 ? CUDA.zeros(backend_number, total_send) : nothing
+        recv_buf = total_recv > 0 ? CUDA.zeros(backend_number, total_recv) : nothing
+
+        state_ref[] = NCCLFieldGroupState(
+            send_ops_per_comp, recv_ops_per_comp,
+            total_send, total_recv,
+            send_buf, recv_buf, remote_rank)
+    end
+
+    if is_root()
+        sh = _nccl_state_H[]
+        se = _nccl_state_E[]
+        send_mb = max(sh.total_send, se.total_send) * sizeof(backend_number) / 1024^2
+        recv_mb = max(sh.total_recv, se.total_recv) * sizeof(backend_number) / 1024^2
+        @info("  NCCL halo: $(length(remote_sends)) send + $(length(remote_recvs)) recv connections, " *
+              "aggregate $(round(send_mb, digits=1))MB send / $(round(recv_mb, digits=1))MB recv")
+    end
+end
+
+"""
+    _exchange_halos_nccl!(sim::SimulationData, components)
+
+NCCL GPU-direct halo exchange using precomputed aggregate buffers.
+All cross-rank data is packed into one contiguous GPU buffer per direction,
+transferred with a single NCCL Send + Recv per remote rank, then unpacked.
+"""
+function _exchange_halos_nccl!(sim::SimulationData, components)
+    nccl_comm = _nccl_comm[]
+
+    # Select precomputed state for this field group
+    state = components[1] isa H ? _nccl_state_H[] : _nccl_state_E[]
+
+    # Phase 1: Pack all field slices into aggregate send buffer
+    if state.total_send > 0
+        send_buf = state.send_buf
+        for (comp_idx, comp) in enumerate(components)
+            for op in state.send_ops[comp_idx]
+                chunk = sim.chunk_data[op.chunk_idx]
+                src_f = _get_chunk_field(chunk, comp)
+                src_parent = parent(src_f)
+                src_view = @view src_parent[op.ranges[1], op.ranges[2], op.ranges[3]]
+                staging_view = reshape(
+                    @view(send_buf[op.agg_offset+1:op.agg_offset+op.n_elements]),
+                    op.shape)
+                copyto!(staging_view, src_view)
+            end
+        end
+    end
+
+    # Phase 2: Local copies can proceed while GPU pack kernels execute
+    _exchange_halos_local!(sim, components)
+
+    # Synchronize: ensure all packs complete before NCCL reads
+    CUDA.synchronize()
+
+    # Phase 3: NCCL Send + Recv (one per remote rank, aggregate buffers)
+    if state.total_send > 0 || state.total_recv > 0
+        NCCL.group() do
+            if state.total_send > 0
+                NCCL.Send(state.send_buf, nccl_comm; dest=state.remote_rank)
+            end
+            if state.total_recv > 0
+                NCCL.Recv!(state.recv_buf, nccl_comm; source=state.remote_rank)
+            end
+        end
+    end
+
+    # Phase 4: Unpack from aggregate recv buffer into ghost cells
+    if state.total_recv > 0
+        CUDA.synchronize()  # wait for NCCL recv
+        recv_buf = state.recv_buf
+        for (comp_idx, comp) in enumerate(components)
+            for op in state.recv_ops[comp_idx]
+                chunk = sim.chunk_data[op.chunk_idx]
+                dst_f = _get_chunk_field(chunk, comp)
+                dst_parent = parent(dst_f)
+                staging_view = reshape(
+                    @view(recv_buf[op.agg_offset+1:op.agg_offset+op.n_elements]),
+                    op.shape)
+                dst_view = @view dst_parent[op.ranges[1], op.ranges[2], op.ranges[3]]
+                copyto!(dst_view, staging_view)
+            end
+        end
+    end
+end
+
+"""
+    _exchange_halos_mpi_host_staging!(sim::SimulationData, components)
+
+MPI halo exchange with host-staging protocol (5 phases):
   Phase 1: GPU->host: copy halo faces into host staging buffers
   Phase 2: MPI_Isend/Irecv: post non-blocking sends and receives
   Phase 3: Local copies: do local (same-rank) halo copies while MPI is in flight
   Phase 4: MPI_Waitall: block until all sends/receives complete
   Phase 5: Host->GPU: copy received buffers into GPU ghost cells
 """
-function _exchange_halos_mpi!(sim::SimulationData, components)
+function _exchange_halos_mpi_host_staging!(sim::SimulationData, components)
     rank = mpi_rank()
     assignment = sim.chunk_rank_assignment
     comm = mpi_comm()

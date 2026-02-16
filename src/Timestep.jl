@@ -57,9 +57,7 @@ function step!(sim::SimulationData)
         update_magnetic_sources!(sim, t)
     end
 
-    step_B_from_E!(sim)
-
-    update_H_from_B!(sim)
+    step_H_fused!(sim)
 
     update_H_monitors!(sim, t)
 
@@ -67,9 +65,7 @@ function step!(sim::SimulationData)
         update_electric_sources!(sim, t + sim.Δt / 2)
     end
 
-    step_D_from_H!(sim)
-
-    update_E_from_D!(sim)
+    step_E_fused!(sim)
 
     update_E_monitors!(sim, t + sim.Δt / 2)
 
@@ -91,14 +87,12 @@ function _try_capture_graphs!(sim::SimulationData)
 
     try
         graph_H = CUDA.capture(; throw_error=false) do
-            step_B_from_E!(sim)
-            update_H_from_B!(sim)
+            step_H_fused!(sim)
         end
         isnothing(graph_H) && return false
 
         graph_E = CUDA.capture(; throw_error=false) do
-            step_D_from_H!(sim)
-            update_E_from_D!(sim)
+            step_E_fused!(sim)
         end
         isnothing(graph_E) && return false
 
@@ -259,6 +253,717 @@ function update_E_from_D!(sim::SimulationData)
 end
 
 # ------------------------------------------------------------------- #
+# Raw CUDA.jl fused kernels for interior (no-PML) chunks
+#
+# These bypass KernelAbstractions entirely for the hot path, avoiding
+# overhead from CartesianIndex construction, multiple dispatch in inner
+# loops, and KA's index management. Achieves ~2× higher throughput
+# than the KA equivalent by using simple integer indexing.
+#
+# B and D fields are eliminated for the interior. Since H = μ⁻¹·B and
+# E = ε⁻¹·D with constant material properties (no PML W-accumulation),
+# we can reformulate as:
+#   H_new = H_old + μ⁻¹·Δt·curl(E)   (instead of B_new = B_old + Δt·curl(E); H = μ⁻¹·B)
+#   E_new = E_old + ε⁻¹·Δt·curl(H)   (instead of D_new = D_old + Δt·curl(H); E = ε⁻¹·D)
+# This saves 6 array reads + 6 array writes per voxel per step (24 bytes
+# total), and reduces the number of unique arrays from 15 to 9, improving
+# L2 cache and TLB utilization.
+# ------------------------------------------------------------------- #
+
+function _cuda_fused_BH_kernel!(
+    Ex, Ey, Ez,     # source E fields (read-only, stencil)
+    Hx, Hy, Hz,     # H fields (read-write): H_new = H_old + μ⁻¹·Δt·curl(E)
+    m_dt_dx, m_dt_dy, m_dt_dz,   # μ⁻¹ · Δt/Δ{x,y,z}
+    iNx,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+
+    @inbounds begin
+        # Forward curl: uses [ix+1], [iy+1], [iz+1]
+        Hx[ix,iy,iz] = Hx[ix,iy,iz] + m_dt_dz * (Ey[ix,iy,iz+Int32(1)] - Ey[ix,iy,iz]) -
+                                          m_dt_dy * (Ez[ix,iy+Int32(1),iz] - Ez[ix,iy,iz])
+        Hy[ix,iy,iz] = Hy[ix,iy,iz] + m_dt_dx * (Ez[ix+Int32(1),iy,iz] - Ez[ix,iy,iz]) -
+                                          m_dt_dz * (Ex[ix,iy,iz+Int32(1)] - Ex[ix,iy,iz])
+        Hz[ix,iy,iz] = Hz[ix,iy,iz] + m_dt_dy * (Ex[ix,iy+Int32(1),iz] - Ex[ix,iy,iz]) -
+                                          m_dt_dx * (Ey[ix+Int32(1),iy,iz] - Ey[ix,iy,iz])
+    end
+    return nothing
+end
+
+function _cuda_fused_DE_kernel!(
+    Hx, Hy, Hz,     # source H fields (read-only, stencil)
+    Ex, Ey, Ez,     # E fields (read-write): E_new = E_old + ε⁻¹·Δt·curl(H)
+    eps_inv_x, eps_inv_y, eps_inv_z,  # per-voxel ε⁻¹ (read-only)
+    dt_dx, dt_dy, dt_dz,
+    iNx,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+
+    @inbounds begin
+        # Backward curl: uses [ix-1], [iy-1], [iz-1]
+        Kx = dt_dz * (Hy[ix,iy,iz-Int32(1)] - Hy[ix,iy,iz]) -
+             dt_dy * (Hz[ix,iy-Int32(1),iz] - Hz[ix,iy,iz])
+        Ky = dt_dx * (Hz[ix-Int32(1),iy,iz] - Hz[ix,iy,iz]) -
+             dt_dz * (Hx[ix,iy,iz-Int32(1)] - Hx[ix,iy,iz])
+        Kz = dt_dy * (Hx[ix,iy-Int32(1),iz] - Hx[ix,iy,iz]) -
+             dt_dx * (Hy[ix-Int32(1),iy,iz] - Hy[ix,iy,iz])
+
+        Ex[ix,iy,iz] = Ex[ix,iy,iz] + eps_inv_x[ix_0,iy_0,iz_0] * Kx
+        Ey[ix,iy,iz] = Ey[ix,iy,iz] + eps_inv_y[ix_0,iy_0,iz_0] * Ky
+        Ez[ix,iy,iz] = Ez[ix,iy,iz] + eps_inv_z[ix_0,iy_0,iz_0] * Kz
+    end
+    return nothing
+end
+
+function _cuda_fused_DE_scalar_kernel!(
+    Hx, Hy, Hz,
+    Ex, Ey, Ez,
+    eps_inv,         # scalar ε⁻¹
+    dt_dx, dt_dy, dt_dz,
+    iNx,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+
+    @inbounds begin
+        Kx = dt_dz * (Hy[ix,iy,iz-Int32(1)] - Hy[ix,iy,iz]) -
+             dt_dy * (Hz[ix,iy-Int32(1),iz] - Hz[ix,iy,iz])
+        Ky = dt_dx * (Hz[ix-Int32(1),iy,iz] - Hz[ix,iy,iz]) -
+             dt_dz * (Hx[ix,iy,iz-Int32(1)] - Hx[ix,iy,iz])
+        Kz = dt_dy * (Hx[ix,iy-Int32(1),iz] - Hx[ix,iy,iz]) -
+             dt_dx * (Hy[ix-Int32(1),iy,iz] - Hy[ix,iy,iz])
+
+        Ex[ix,iy,iz] = Ex[ix,iy,iz] + eps_inv * Kx
+        Ey[ix,iy,iz] = Ey[ix,iy,iz] + eps_inv * Ky
+        Ez[ix,iy,iz] = Ez[ix,iy,iz] + eps_inv * Kz
+    end
+    return nothing
+end
+
+# ------------------------------------------------------------------- #
+# Raw CUDA PML kernels (fused curl + material update)
+#
+# These handle PML boundary chunks by fusing the step_curl! and
+# update_field! stages into a single kernel, eliminating the
+# intermediate B/D re-read and bypassing KernelAbstractions overhead.
+#
+# Each kernel processes all 3 field components (x, y, z) to maximize
+# data reuse of shared stencil source values.
+#
+# PML direction flags (pml_x, pml_y, pml_z) control which cascade
+# stages are active per component. All threads evaluate the same
+# branch (uniform condition), so there is no warp divergence.
+#
+# Inactive U/W auxiliary fields and σ arrays are replaced with dummy
+# arrays at the launch site; the flags guarantee they are never accessed.
+#
+# Limitations: no material conductivity (σ_D/σ_B), no polarizability,
+# no active sources. Chunks with these features fall back to KA.
+# ------------------------------------------------------------------- #
+
+function _cuda_pml_BH_kernel!(
+    Ex, Ey, Ez,          # source E fields (read)
+    Bx, By, Bz,          # target B fields (read/write)
+    Hx, Hy, Hz,          # output H fields (read/write)
+    UBx, UBy, UBz,       # U auxiliary (read/write, may be dummy)
+    WBx, WBy, WBz,       # W auxiliary (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,  # PML σ 1D (read, may be dummy)
+    m_inv,               # scalar μ⁻¹
+    dt_dx, dt_dy, dt_dz,
+    iNx,                 # x-dimension (Int32)
+    pml_x::Int32, pml_y::Int32, pml_z::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(m_inv)
+
+    @inbounds begin
+        # Load shared source field values (reused across components)
+        ey_cur = Ey[ix,iy,iz]; ez_cur = Ez[ix,iy,iz]; ex_cur = Ex[ix,iy,iz]
+
+        # ==================== X component ====================
+        # curl_x(E) = dEy/dz - dEz/dy (forward diff)
+        Kx = dt_dz * (Ey[ix,iy,iz+Int32(1)] - ey_cur) - dt_dy * (Ez[ix,iy+Int32(1),iz] - ez_cur)
+
+        # U stage: X uses σ_next = σ_pml_y (pml_y)
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            u_old = UBx[ix,iy,iz]
+            UBx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+            in_t = UBx[ix,iy,iz] - u_old
+        else
+            in_t = Kx
+        end
+
+        # T stage: X uses σ_prev = σ_pml_z (pml_z)
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            Bx[ix,iy,iz] = ((_one - σ_val) * Bx[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Bx[ix,iy,iz] = Bx[ix,iy,iz] + in_t
+        end
+
+        # H update: X uses σ_own = σ_pml_x (pml_x)
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            w_old = WBx[ix,iy,iz]
+            WBx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+            Hx[ix,iy,iz] = Hx[ix,iy,iz] + (_one + σ_val) * WBx[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Hx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+        end
+
+        # ==================== Y component ====================
+        # curl_y(E) = dEz/dx - dEx/dz (forward diff)
+        Ky = dt_dx * (Ez[ix+Int32(1),iy,iz] - ez_cur) - dt_dz * (Ex[ix,iy,iz+Int32(1)] - ex_cur)
+
+        # U stage: Y uses σ_next = σ_pml_z (pml_z)
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            u_old = UBy[ix,iy,iz]
+            UBy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+            in_t = UBy[ix,iy,iz] - u_old
+        else
+            in_t = Ky
+        end
+
+        # T stage: Y uses σ_prev = σ_pml_x (pml_x)
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            By[ix,iy,iz] = ((_one - σ_val) * By[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            By[ix,iy,iz] = By[ix,iy,iz] + in_t
+        end
+
+        # H update: Y uses σ_own = σ_pml_y (pml_y)
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            w_old = WBy[ix,iy,iz]
+            WBy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+            Hy[ix,iy,iz] = Hy[ix,iy,iz] + (_one + σ_val) * WBy[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Hy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+        end
+
+        # ==================== Z component ====================
+        # curl_z(E) = dEx/dy - dEy/dx (forward diff)
+        Kz = dt_dy * (Ex[ix,iy+Int32(1),iz] - ex_cur) - dt_dx * (Ey[ix+Int32(1),iy,iz] - ey_cur)
+
+        # U stage: Z uses σ_next = σ_pml_x (pml_x)
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            u_old = UBz[ix,iy,iz]
+            UBz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+            in_t = UBz[ix,iy,iz] - u_old
+        else
+            in_t = Kz
+        end
+
+        # T stage: Z uses σ_prev = σ_pml_y (pml_y)
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            Bz[ix,iy,iz] = ((_one - σ_val) * Bz[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Bz[ix,iy,iz] = Bz[ix,iy,iz] + in_t
+        end
+
+        # H update: Z uses σ_own = σ_pml_z (pml_z)
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            w_old = WBz[ix,iy,iz]
+            WBz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+            Hz[ix,iy,iz] = Hz[ix,iy,iz] + (_one + σ_val) * WBz[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Hz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_DE_kernel!(
+    Hx, Hy, Hz,          # source H fields (read)
+    Dx, Dy, Dz,          # target D fields (read/write)
+    Ex, Ey, Ez,          # output E fields (read/write)
+    UDx, UDy, UDz,       # U auxiliary (read/write, may be dummy)
+    WDx, WDy, WDz,       # W auxiliary (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,
+    eps_inv_x, eps_inv_y, eps_inv_z,  # per-voxel ε⁻¹
+    dt_dx, dt_dy, dt_dz,
+    iNx,
+    pml_x::Int32, pml_y::Int32, pml_z::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(dt_dx)
+
+    @inbounds begin
+        hy_cur = Hy[ix,iy,iz]; hx_cur = Hx[ix,iy,iz]; hz_cur = Hz[ix,iy,iz]
+
+        # ==================== X component ====================
+        Kx = dt_dz * (Hy[ix,iy,iz-Int32(1)] - hy_cur) - dt_dy * (Hz[ix,iy-Int32(1),iz] - hz_cur)
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            u_old = UDx[ix,iy,iz]
+            UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+            in_t = UDx[ix,iy,iz] - u_old
+        else
+            in_t = Kx
+        end
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
+        end
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            w_old = WDx[ix,iy,iz]
+            WDx[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
+            Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ex[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
+        end
+
+        # ==================== Y component ====================
+        Ky = dt_dx * (Hz[ix-Int32(1),iy,iz] - hz_cur) - dt_dz * (Hx[ix,iy,iz-Int32(1)] - hx_cur)
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            u_old = UDy[ix,iy,iz]
+            UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+            in_t = UDy[ix,iy,iz] - u_old
+        else
+            in_t = Ky
+        end
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
+        end
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            w_old = WDy[ix,iy,iz]
+            WDy[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
+            Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ey[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
+        end
+
+        # ==================== Z component ====================
+        Kz = dt_dy * (Hx[ix,iy-Int32(1),iz] - hx_cur) - dt_dx * (Hy[ix-Int32(1),iy,iz] - hy_cur)
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            u_old = UDz[ix,iy,iz]
+            UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+            in_t = UDz[ix,iy,iz] - u_old
+        else
+            in_t = Kz
+        end
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
+        end
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            w_old = WDz[ix,iy,iz]
+            WDz[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
+            Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ez[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_DE_scalar_kernel!(
+    Hx, Hy, Hz,
+    Dx, Dy, Dz,
+    Ex, Ey, Ez,
+    UDx, UDy, UDz,
+    WDx, WDy, WDz,
+    σ_pml_x, σ_pml_y, σ_pml_z,
+    eps_inv,             # scalar ε⁻¹
+    dt_dx, dt_dy, dt_dz,
+    iNx,
+    pml_x::Int32, pml_y::Int32, pml_z::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(eps_inv)
+
+    @inbounds begin
+        hy_cur = Hy[ix,iy,iz]; hx_cur = Hx[ix,iy,iz]; hz_cur = Hz[ix,iy,iz]
+
+        # ==================== X component ====================
+        Kx = dt_dz * (Hy[ix,iy,iz-Int32(1)] - hy_cur) - dt_dy * (Hz[ix,iy-Int32(1),iz] - hz_cur)
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            u_old = UDx[ix,iy,iz]
+            UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+            in_t = UDx[ix,iy,iz] - u_old
+        else
+            in_t = Kx
+        end
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
+        end
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            w_old = WDx[ix,iy,iz]
+            WDx[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
+            Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ex[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
+        end
+
+        # ==================== Y component ====================
+        Ky = dt_dx * (Hz[ix-Int32(1),iy,iz] - hz_cur) - dt_dz * (Hx[ix,iy,iz-Int32(1)] - hx_cur)
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            u_old = UDy[ix,iy,iz]
+            UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+            in_t = UDy[ix,iy,iz] - u_old
+        else
+            in_t = Ky
+        end
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
+        end
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            w_old = WDy[ix,iy,iz]
+            WDy[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
+            Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ey[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
+        end
+
+        # ==================== Z component ====================
+        Kz = dt_dy * (Hx[ix,iy-Int32(1),iz] - hx_cur) - dt_dx * (Hy[ix-Int32(1),iy,iz] - hy_cur)
+
+        if pml_x != Int32(0)
+            σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+            u_old = UDz[ix,iy,iz]
+            UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+            in_t = UDz[ix,iy,iz] - u_old
+        else
+            in_t = Kz
+        end
+
+        if pml_y != Int32(0)
+            σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+            Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+        else
+            Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
+        end
+
+        if pml_z != Int32(0)
+            σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+            w_old = WDz[ix,iy,iz]
+            WDz[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
+            Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+        else
+            Ez[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
+        end
+    end
+    return nothing
+end
+
+# Helper: find a valid non-Nothing PML σ array for dummy substitution
+@inline function _pml_dummy_σ(b, pf)
+    pf.has_pml_x ? b.σBx : (pf.has_pml_y ? b.σBy : b.σBz)
+end
+@inline function _pml_dummy_σD(b, pf)
+    pf.has_pml_x ? b.σDx : (pf.has_pml_y ? b.σDy : b.σDz)
+end
+
+# ------------------------------------------------------------------- #
+# Fused curl+update dispatch functions
+#
+# For chunks WITHOUT PML, use the fused step_curl_and_update! kernel
+# to eliminate the B/D re-read. For PML chunks, fall back to the
+# separate step_curl! + update_field! kernels.
+# ------------------------------------------------------------------- #
+
+function step_H_fused!(sim::SimulationData)
+    curl_B_kernel = sim._cached_curl_kernel
+    update_H_kernel = sim._cached_update_kernel
+    sa = sim.sources_active
+    idx_curl = 1
+
+    cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
+    use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
+    dt_dx = sim.Δt / sim.Δx
+    dt_dy = sim.Δt / sim.Δy
+    dt_dz = sim.Δt / sim.Δz
+
+    for chunk in sim.chunk_data
+        f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
+        nr = chunk.ndrange
+
+        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
+            # Raw CUDA path: scalar μ, B eliminated — H_new = H_old + μ⁻¹·Δt·curl(E)
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            m_inv = backend_number(g.μ_inv)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_BH_kernel!(
+                f.fEx, f.fEy, f.fEz,
+                f.fHx, f.fHy, f.fHz,
+                m_inv * backend_number(dt_dx), m_inv * backend_number(dt_dy), m_inv * backend_number(dt_dz),
+                iNx)
+        elseif !has_any_pml(chunk.spec.physics)
+            # KA fused path: interior chunks with sources active or per-voxel μ
+            fused_kernel = sim._cached_fused_kernel
+            fused_kernel(
+                f.fEx, f.fEy, f.fEz,
+                f.fBx, f.fBy, f.fBz,
+                f.fHx, f.fHy, f.fHz,
+                sa ? f.fSBx : nothing,
+                sa ? f.fSBy : nothing,
+                sa ? f.fSBz : nothing,
+                g.μ_inv, g.μ_inv_x, g.μ_inv_y, g.μ_inv_z,
+                sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
+                ndrange = nr,
+            )
+        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+               !chunk.spec.physics.has_sigma_B && g.μ_inv isa Real && f.fPBx isa Nothing
+            # Raw CUDA PML path: fused curl+update, no material σ, no polarizability
+            # Note: safe to use when has_sources && !sa because source arrays are zero after termination
+            pf = chunk.spec.physics
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
+            dummy3d = f.fBx
+            dummy_σ = _pml_dummy_σ(b, pf)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_BH_kernel!(
+                f.fEx, f.fEy, f.fEz,
+                f.fBx, f.fBy, f.fBz,
+                f.fHx, f.fHy, f.fHz,
+                pf.has_pml_y ? f.fUBx : dummy3d,
+                pf.has_pml_z ? f.fUBy : dummy3d,
+                pf.has_pml_x ? f.fUBz : dummy3d,
+                pf.has_pml_x ? f.fWBx : dummy3d,
+                pf.has_pml_y ? f.fWBy : dummy3d,
+                pf.has_pml_z ? f.fWBz : dummy3d,
+                pf.has_pml_x ? b.σBx : dummy_σ,
+                pf.has_pml_y ? b.σBy : dummy_σ,
+                pf.has_pml_z ? b.σBz : dummy_σ,
+                backend_number(g.μ_inv),
+                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                iNx, pml_x, pml_y, pml_z)
+        else
+            # PML KA path: separate curl + update
+            # (Fusing was tested but regresses due to register/parameter pressure;
+            #  see experiment #16 in log.md)
+            curl_B_kernel(
+                f.fEx, f.fEy, f.fEz,
+                f.fBx, f.fBy, f.fBz,
+                f.fCBx, f.fCBy, f.fCBz,
+                f.fUBx, f.fUBy, f.fUBz,
+                g.σBx, g.σBy, g.σBz,
+                b.σBx, b.σBy, b.σBz,
+                sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
+                ndrange = nr,
+            )
+            update_H_kernel(
+                f.fHx, f.fHy, f.fHz,
+                f.fBx, f.fBy, f.fBz,
+                f.fWBx, f.fWBy, f.fWBz,
+                f.fPBx, f.fPBy, f.fPBz,
+                sa ? f.fSBx : nothing,
+                sa ? f.fSBy : nothing,
+                sa ? f.fSBz : nothing,
+                g.μ_inv, g.μ_inv_x, g.μ_inv_y, g.μ_inv_z,
+                b.σBx, b.σBy, b.σBz,
+                ndrange = nr,
+            )
+        end
+    end
+
+    exchange_halos!(sim, :H)
+    return
+end
+
+function step_E_fused!(sim::SimulationData)
+    curl_D_kernel = sim._cached_curl_kernel
+    update_E_kernel = sim._cached_update_kernel
+    sa = sim.sources_active
+    idx_curl = -1
+
+    cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
+    use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
+    dt_dx = sim.Δt / sim.Δx
+    dt_dy = sim.Δt / sim.Δy
+    dt_dz = sim.Δt / sim.Δz
+
+    for chunk in sim.chunk_data
+        f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
+        nr = chunk.ndrange
+
+        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray
+            # Raw CUDA path: per-voxel ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_kernel!(
+                f.fHx, f.fHy, f.fHz,
+                f.fEx, f.fEy, f.fEz,
+                g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                iNx)
+        elseif backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real
+            # Raw CUDA path: scalar ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_scalar_kernel!(
+                f.fHx, f.fHy, f.fHz,
+                f.fEx, f.fEy, f.fEz,
+                backend_number(g.ε_inv),
+                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                iNx)
+        elseif !has_any_pml(chunk.spec.physics)
+            # KA fused path: interior chunks with sources active
+            fused_kernel = sim._cached_fused_kernel
+            fused_kernel(
+                f.fHx, f.fHy, f.fHz,
+                f.fDx, f.fDy, f.fDz,
+                f.fEx, f.fEy, f.fEz,
+                sa ? f.fSDx : nothing,
+                sa ? f.fSDy : nothing,
+                sa ? f.fSDz : nothing,
+                g.ε_inv, g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
+                ndrange = nr,
+            )
+        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+               !chunk.spec.physics.has_sigma_D && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
+            # Raw CUDA PML path: per-voxel ε, fused curl+update
+            pf = chunk.spec.physics
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
+            dummy3d = f.fDx
+            dummy_σ = _pml_dummy_σD(b, pf)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_kernel!(
+                f.fHx, f.fHy, f.fHz,
+                f.fDx, f.fDy, f.fDz,
+                f.fEx, f.fEy, f.fEz,
+                pf.has_pml_y ? f.fUDx : dummy3d,
+                pf.has_pml_z ? f.fUDy : dummy3d,
+                pf.has_pml_x ? f.fUDz : dummy3d,
+                pf.has_pml_x ? f.fWDx : dummy3d,
+                pf.has_pml_y ? f.fWDy : dummy3d,
+                pf.has_pml_z ? f.fWDz : dummy3d,
+                pf.has_pml_x ? b.σDx : dummy_σ,
+                pf.has_pml_y ? b.σDy : dummy_σ,
+                pf.has_pml_z ? b.σDz : dummy_σ,
+                g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                iNx, pml_x, pml_y, pml_z)
+        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+               !chunk.spec.physics.has_sigma_D && g.ε_inv isa Real && f.fPDx isa Nothing
+            # Raw CUDA PML path: scalar ε, fused curl+update
+            pf = chunk.spec.physics
+            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
+            nblocks_x = cld(Int(iNx), cuda_wg)
+            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
+            dummy3d = f.fDx
+            dummy_σ = _pml_dummy_σD(b, pf)
+            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_scalar_kernel!(
+                f.fHx, f.fHy, f.fHz,
+                f.fDx, f.fDy, f.fDz,
+                f.fEx, f.fEy, f.fEz,
+                pf.has_pml_y ? f.fUDx : dummy3d,
+                pf.has_pml_z ? f.fUDy : dummy3d,
+                pf.has_pml_x ? f.fUDz : dummy3d,
+                pf.has_pml_x ? f.fWDx : dummy3d,
+                pf.has_pml_y ? f.fWDy : dummy3d,
+                pf.has_pml_z ? f.fWDz : dummy3d,
+                pf.has_pml_x ? b.σDx : dummy_σ,
+                pf.has_pml_y ? b.σDy : dummy_σ,
+                pf.has_pml_z ? b.σDz : dummy_σ,
+                backend_number(g.ε_inv),
+                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                iNx, pml_x, pml_y, pml_z)
+        else
+            # PML KA path: separate curl + update
+            # (Fusing was tested but regresses due to register/parameter pressure;
+            #  see experiment #16 in log.md)
+            curl_D_kernel(
+                f.fHx, f.fHy, f.fHz,
+                f.fDx, f.fDy, f.fDz,
+                f.fCDx, f.fCDy, f.fCDz,
+                f.fUDx, f.fUDy, f.fUDz,
+                g.σDx, g.σDy, g.σDz,
+                b.σDx, b.σDy, b.σDz,
+                sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
+                ndrange = nr,
+            )
+            update_E_kernel(
+                f.fEx, f.fEy, f.fEz,
+                f.fDx, f.fDy, f.fDz,
+                f.fWDx, f.fWDy, f.fWDz,
+                f.fPDx, f.fPDy, f.fPDz,
+                sa ? f.fSDx : nothing,
+                sa ? f.fSDy : nothing,
+                sa ? f.fSDz : nothing,
+                g.ε_inv, g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                b.σDx, b.σDy, b.σDz,
+                ndrange = nr,
+            )
+        end
+    end
+
+    exchange_halos!(sim, :E)
+    return
+end
+
+# ------------------------------------------------------------------- #
 # Per-component curl launch functions
 #
 # These use step_curl_comp! which has ~30-35 registers (vs ~64 for the
@@ -306,13 +1011,100 @@ function step_D_from_H_comp!(sim::SimulationData)
     return
 end
 
+# ------------------------------------------------------------------- #
+# Per-component update kernel (reduced register pressure)
+#
+# Splitting the fused 3-component update_field! into per-component kernels
+# reduces register usage, improving GPU occupancy and memory bandwidth
+# utilization. Same trade-off as step_curl_comp!: 3× more launches.
+# ------------------------------------------------------------------- #
+
+@kernel function update_field_comp!(
+    A,             # field to be updated (E or H, single component)
+    T,             # timestepped field (D or B, single component)
+    W,             # auxiliary field (can be Nothing)
+    P,             # polarizability (can be Nothing)
+    S,             # source field (can be Nothing)
+    m_inv,         # scalar inverse material constant (can be Nothing)
+    m_inv_comp,    # per-voxel inverse material for this component (can be Nothing)
+    σ_comp,        # PML conductivity for this component (can be Nothing)
+    comp_dir,      # 1=x, 2=y, 3=z — selects which axis index for σ
+)
+    ix, iy, iz = @index(Global, NTuple)
+    fidx = CartesianIndex(ix + 1, iy + 1, iz + 1)
+    gidx = CartesianIndex(ix, iy, iz)
+
+    if comp_dir == 1
+        σ_val = get_σ(σ_comp, ix)
+    elseif comp_dir == 2
+        σ_val = get_σ(σ_comp, iy)
+    else
+        σ_val = get_σ(σ_comp, iz)
+    end
+
+    update_field_generic(
+        A, T, W, P, S,
+        get_m_inv(m_inv, m_inv_comp, gidx),
+        σ_val,
+        fidx,
+    )
+end
+
+function update_H_from_B_comp!(sim::SimulationData)
+    update_comp = sim._cached_update_comp_kernel
+    sa = sim.sources_active
+    for chunk in sim.chunk_data
+        f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
+        nr = chunk.ndrange
+        # X component
+        update_comp(f.fHx, f.fBx, f.fWBx, f.fPBx,
+                    sa ? f.fSBx : nothing,
+                    g.μ_inv, g.μ_inv_x, b.σBx, 1, ndrange=nr)
+        # Y component
+        update_comp(f.fHy, f.fBy, f.fWBy, f.fPBy,
+                    sa ? f.fSBy : nothing,
+                    g.μ_inv, g.μ_inv_y, b.σBy, 2, ndrange=nr)
+        # Z component
+        update_comp(f.fHz, f.fBz, f.fWBz, f.fPBz,
+                    sa ? f.fSBz : nothing,
+                    g.μ_inv, g.μ_inv_z, b.σBz, 3, ndrange=nr)
+    end
+
+    exchange_halos!(sim, :H)
+    return
+end
+
+function update_E_from_D_comp!(sim::SimulationData)
+    update_comp = sim._cached_update_comp_kernel
+    sa = sim.sources_active
+    for chunk in sim.chunk_data
+        f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
+        nr = chunk.ndrange
+        # X component
+        update_comp(f.fEx, f.fDx, f.fWDx, f.fPDx,
+                    sa ? f.fSDx : nothing,
+                    g.ε_inv, g.ε_inv_x, b.σDx, 1, ndrange=nr)
+        # Y component
+        update_comp(f.fEy, f.fDy, f.fWDy, f.fPDy,
+                    sa ? f.fSDy : nothing,
+                    g.ε_inv, g.ε_inv_y, b.σDy, 2, ndrange=nr)
+        # Z component
+        update_comp(f.fEz, f.fDz, f.fWDz, f.fPDz,
+                    sa ? f.fSDz : nothing,
+                    g.ε_inv, g.ε_inv_z, b.σDz, 3, ndrange=nr)
+    end
+
+    exchange_halos!(sim, :E)
+    return
+end
+
 @kernel function step_curl!(
-    Ax, Ay, Az,
+    @Const(Ax), @Const(Ay), @Const(Az),
     Tx, Ty, Tz,
     Cx, Cy, Cz,
     Ux, Uy, Uz,
-    σDx, σDy, σDz,
-    σx, σy, σz,
+    @Const(σDx), @Const(σDy), @Const(σDz),
+    @Const(σx), @Const(σy), @Const(σz),
     Δt, Δx, Δy, Δz,
     idx_curl,
 )
@@ -343,6 +1135,103 @@ end
     σ_prev = get_σ(σy, iy)
     σ_next = get_σ(σx, ix)
     generic_curl!(Kz, Cz, Uz, Tz, σD_temp, σ_next, σ_prev, fidx)
+end
+
+# ------------------------------------------------------------------- #
+# Fused curl + update kernel (no PML)
+#
+# For interior chunks without PML, fusing the curl and material-update
+# steps into a single kernel eliminates the intermediate B/D re-read,
+# saving ~13% memory traffic. The reduced argument count also lowers
+# register pressure, improving occupancy.
+# ------------------------------------------------------------------- #
+
+@kernel function step_curl_and_update!(
+    @Const(Ax), @Const(Ay), @Const(Az),   # source fields (E for B→H, H for D→E)
+    Tx, Ty, Tz,                             # timestepped fields (B or D) - read-write
+    Ox, Oy, Oz,                             # output fields (H or E) - write
+    Sx, Sy, Sz,                             # source fields (optional, read+clear)
+    @Const(m_inv),                          # scalar material inverse (can be Nothing)
+    @Const(m_inv_x), @Const(m_inv_y), @Const(m_inv_z),  # per-voxel material (can be Nothing)
+    Δt, Δx, Δy, Δz,
+    idx_curl,
+)
+    ix, iy, iz = @index(Global, NTuple)
+    fx, fy, fz = ix + 1, iy + 1, iz + 1
+    fidx = CartesianIndex(fx, fy, fz)
+    gidx = CartesianIndex(ix, iy, iz)
+
+    # X component: curl then update
+    Kx = Δt * curl_x!(Ay, Az, Δy, Δz, idx_curl, fx, fy, fz)
+    Tx[fidx] = Tx[fidx] + Kx
+    net_x = Tx[fidx] + update_cache(Sx, fidx)
+    clear_source(Sx, fidx)
+    Ox[fidx] = get_m_inv(m_inv, m_inv_x, gidx) * net_x
+
+    # Y component: curl then update
+    Ky = Δt * curl_y!(Az, Ax, Δz, Δx, idx_curl, fx, fy, fz)
+    Ty[fidx] = Ty[fidx] + Ky
+    net_y = Ty[fidx] + update_cache(Sy, fidx)
+    clear_source(Sy, fidx)
+    Oy[fidx] = get_m_inv(m_inv, m_inv_y, gidx) * net_y
+
+    # Z component: curl then update
+    Kz = Δt * curl_z!(Ax, Ay, Δx, Δy, idx_curl, fx, fy, fz)
+    Tz[fidx] = Tz[fidx] + Kz
+    net_z = Tz[fidx] + update_cache(Sz, fidx)
+    clear_source(Sz, fidx)
+    Oz[fidx] = get_m_inv(m_inv, m_inv_z, gidx) * net_z
+end
+
+# ------------------------------------------------------------------- #
+# Fused curl + update kernel (PML)
+#
+# For PML chunks, fusing curl cascade + material update into one kernel
+# eliminates the B/D re-read between separate curl and update launches.
+# Each component's T_new is kept in a register and passed directly to
+# update_field_from_T, saving 12 bytes/voxel/step in global memory
+# traffic and halving the number of kernel launches per PML chunk.
+# KA's type specialization on Nothing eliminates dead PML code paths.
+# ------------------------------------------------------------------- #
+
+@kernel function step_curl_and_update_pml!(
+    # Curl stage inputs
+    @Const(Ax), @Const(Ay), @Const(Az),            # source fields (E for BH, H for DE)
+    Tx, Ty, Tz,                                      # B/D fields (read-write)
+    Cx, Cy, Cz,                                      # C cascade (PML, can be Nothing)
+    Ux, Uy, Uz,                                      # U cascade (PML, can be Nothing)
+    @Const(σDx), @Const(σDy), @Const(σDz),          # material σ (can be Nothing)
+    @Const(σx), @Const(σy), @Const(σz),             # PML σ (shared between curl and update)
+    Δt, Δx, Δy, Δz, idx_curl,
+    # Update stage inputs
+    Ox, Oy, Oz,                                      # output fields (H or E)
+    Wx, Wy, Wz,                                      # W auxiliary (can be Nothing)
+    @Const(Px), @Const(Py), @Const(Pz),             # P polarization (can be Nothing)
+    Sx, Sy, Sz,                                      # S sources (can be Nothing)
+    @Const(m_inv), @Const(m_inv_x), @Const(m_inv_y), @Const(m_inv_z),
+)
+    ix, iy, iz = @index(Global, NTuple)
+    fx, fy, fz = ix + 1, iy + 1, iz + 1
+    fidx = CartesianIndex(fx, fy, fz)
+    gidx = CartesianIndex(ix, iy, iz)
+
+    # X component: curl cascade → T_new in register → material update
+    Kx = Δt * curl_x!(Ay, Az, Δy, Δz, idx_curl, fx, fy, fz)
+    σD_temp = get_σD(σDx, gidx, Δt)
+    T_new_x = generic_curl!(Kx, Cx, Ux, Tx, σD_temp, get_σ(σy, iy), get_σ(σz, iz), fidx)
+    update_field_from_T(Ox, T_new_x, Wx, Px, Sx, get_m_inv(m_inv, m_inv_x, gidx), get_σ(σx, ix), fidx)
+
+    # Y component: curl cascade → T_new in register → material update
+    Ky = Δt * curl_y!(Az, Ax, Δz, Δx, idx_curl, fx, fy, fz)
+    σD_temp = get_σD(σDy, gidx, Δt)
+    T_new_y = generic_curl!(Ky, Cy, Uy, Ty, σD_temp, get_σ(σz, iz), get_σ(σx, ix), fidx)
+    update_field_from_T(Oy, T_new_y, Wy, Py, Sy, get_m_inv(m_inv, m_inv_y, gidx), get_σ(σy, iy), fidx)
+
+    # Z component: curl cascade → T_new in register → material update
+    Kz = Δt * curl_z!(Ax, Ay, Δx, Δy, idx_curl, fx, fy, fz)
+    σD_temp = get_σD(σDz, gidx, Δt)
+    T_new_z = generic_curl!(Kz, Cz, Uz, Tz, σD_temp, get_σ(σx, ix), get_σ(σy, iy), fidx)
+    update_field_from_T(Oz, T_new_z, Wz, Pz, Sz, get_m_inv(m_inv, m_inv_z, gidx), get_σ(σz, iz), fidx)
 end
 
 # ------------------------------------------------------------------- #
@@ -462,15 +1351,17 @@ end
     C[idx_array] = update_field_from_curl(C[idx_array], K, nothing, σD)
     U_old = U[idx_array]
     U[idx_array] = update_field_from_curl(U[idx_array], C[idx_array], C_old, σ_next)
-    T[idx_array] = update_field_from_curl(T[idx_array], U[idx_array], U_old, σ_prev)
-    return
+    T_new = update_field_from_curl(T[idx_array], U[idx_array], U_old, σ_prev)
+    T[idx_array] = T_new
+    return T_new
 end
 
 @inline function generic_curl!(K, C, U::Nothing, T, σD, σ_next::Nothing, σ_prev, idx_array)
     C_old = C[idx_array]
     C[idx_array] = update_field_from_curl(C[idx_array], K, nothing, σD)
-    T[idx_array] = update_field_from_curl(T[idx_array], C[idx_array], C_old, σ_prev)
-    return
+    T_new = update_field_from_curl(T[idx_array], C[idx_array], C_old, σ_prev)
+    T[idx_array] = T_new
+    return T_new
 end
 
 @inline function generic_curl!(K, C, U::Nothing, T, σD, σ_next::AbstractArray, σ_prev, idx_array)
@@ -490,8 +1381,9 @@ end
 )
     U_old = U[idx_array]
     U[idx_array] = update_field_from_curl(U[idx_array], K, nothing, σ_next)
-    T[idx_array] = update_field_from_curl(T[idx_array], U[idx_array], U_old, σ_prev)
-    return
+    T_new = update_field_from_curl(T[idx_array], U[idx_array], U_old, σ_prev)
+    T[idx_array] = T_new
+    return T_new
 end
 
 @inline function generic_curl!(
@@ -504,8 +1396,9 @@ end
     σ_prev::Nothing,
     idx_array,
 )
-    T[idx_array] = update_field_from_curl(T[idx_array], K, nothing, σD)
-    return
+    T_new = update_field_from_curl(T[idx_array], K, nothing, σD)
+    T[idx_array] = T_new
+    return T_new
 end
 
 @inline function generic_curl!(
@@ -518,8 +1411,9 @@ end
     σ_prev,
     idx_array,
 )
-    T[idx_array] = update_field_from_curl(T[idx_array], K, nothing, σ_prev)
-    return
+    T_new = update_field_from_curl(T[idx_array], K, nothing, σ_prev)
+    T[idx_array] = T_new
+    return T_new
 end
 
 @inline function generic_curl!(
@@ -546,8 +1440,9 @@ end
     σ_prev::Nothing,
     idx_array,
 )
-    T[idx_array] = update_field_from_curl(T[idx_array], K, nothing, nothing)
-    return
+    T_new = update_field_from_curl(T[idx_array], K, nothing, nothing)
+    T[idx_array] = T_new
+    return T_new
 end
 
 # type stability
@@ -623,6 +1518,35 @@ end
     error("W fields not properly initialized...")
 end
 
+# update_field_from_T: same as update_field_generic but takes T_new as a
+# register value instead of reading from the T array. Used by the fused
+# curl+update PML kernel to eliminate the B/D re-read between stages.
+@inline function update_field_from_T(A, T_val, W, P, S, m_inv, σ, idx_array)
+    W_old = W[idx_array]
+    net_field = T_val
+    net_field += update_cache(S, idx_array)
+    net_field += update_cache(P, idx_array)
+    clear_source(S, idx_array)
+    W[idx_array] = m_inv * net_field
+    A[idx_array] = A[idx_array] + (1 + σ) * W[idx_array] - (1 - σ) * W_old
+end
+
+@inline function update_field_from_T(A, T_val, W::Nothing, P, S, m_inv, σ::Nothing, idx_array)
+    net_field = T_val
+    net_field += update_cache(S, idx_array)
+    net_field += update_cache(P, idx_array)
+    clear_source(S, idx_array)
+    A[idx_array] = m_inv * net_field
+end
+
+@inline function update_field_from_T(A, T_val, W, P, S, m_inv, σ::Nothing, idx_array)
+    error("W fields initialized when they don't need to be...")
+end
+
+@inline function update_field_from_T(A, T_val, W::Nothing, P, S, m_inv, σ, idx_array)
+    error("W fields not properly initialized...")
+end
+
 @inline get_m_inv(m_inv::Nothing, m_inv_x::AbstractArray, idx_array) = m_inv_x[idx_array]
 @inline get_m_inv(m_inv::Real, m_inv_x::Nothing, idx_array) = m_inv
 @inline function get_m_inv(m_inv, m_inv_x, idx_array)
@@ -631,12 +1555,12 @@ end
 
 @kernel function update_field!(
     Ax, Ay, Az,
-    Tx, Ty, Tz,
+    @Const(Tx), @Const(Ty), @Const(Tz),
     Wx, Wy, Wz,
-    Px, Py, Pz,
+    @Const(Px), @Const(Py), @Const(Pz),
     Sx, Sy, Sz,
-    m_inv, m_inv_x, m_inv_y, m_inv_z,
-    σx, σy, σz,
+    @Const(m_inv), @Const(m_inv_x), @Const(m_inv_y), @Const(m_inv_z),
+    @Const(σx), @Const(σy), @Const(σz),
 )
     ix, iy, iz = @index(Global, NTuple)
     # P.5: Shifted indices for field arrays, unshifted for geometry arrays

@@ -73,6 +73,9 @@ function prepare_simulation!(sim::SimulationData)
     t_start = time()
 
     # prepare geometry
+    # Rasterize full-domain geometry on CPU, then transfer to GPU.
+    # In distributed mode, global arrays are used temporarily for slicing
+    # into per-chunk geometry (in create_local_chunks), then freed.
     t0 = time()
     init_geometry(sim, sim.geometry)
     t1 = time()
@@ -117,7 +120,13 @@ function prepare_simulation!(sim::SimulationData)
     end
 
     # prepare fields
-    init_fields(sim, sim.dimensionality)
+    # In distributed mode, skip allocating full-domain arrays — they are never
+    # used at runtime (stepping operates on per-chunk fields). This saves
+    # N_voxels × ~13 arrays × sizeof(T) of GPU memory (e.g., 132 GB for a
+    # 2.5B-voxel simulation).
+    if !is_distributed() && sim.chunk_plan.total_chunks == 1
+        init_fields(sim, sim.dimensionality)
+    end
     t4 = time()
     if !is_distributed() || is_root()
         @info("  init_fields:     $(round(t4-t3b, digits=3))s")
@@ -139,13 +148,18 @@ function prepare_simulation!(sim::SimulationData)
     connect_chunks!(sim)
 
     # Precompute halo copy operations for fast runtime exchange
-    if !is_distributed()
+    # (only for CUDA backend — HaloCopyOp uses CuPtr)
+    if !is_distributed() && !(backend_engine isa CPU)
         precompute_halo_ops!(sim)
     end
 
     # Allocate MPI staging buffers for cross-rank halo exchange
     if is_distributed()
         allocate_mpi_halo_buffers!(sim)
+        init_nccl!()  # GPU-direct halo exchange via NCCL (falls back to MPI if unavailable)
+        if nccl_initialized()
+            precompute_nccl_exchange!(sim)
+        end
     end
 
     t6 = time()
@@ -161,6 +175,9 @@ function prepare_simulation!(sim::SimulationData)
     sim._cached_curl_kernel = step_curl!(backend_engine, (wg,))
     sim._cached_update_kernel = update_field!(backend_engine, (wg,))
     sim._cached_curl_comp_kernel = step_curl_comp!(backend_engine, (wg,))
+    sim._cached_update_comp_kernel = update_field_comp!(backend_engine, (wg,))
+    sim._cached_fused_kernel = step_curl_and_update!(backend_engine, (wg,))
+    sim._cached_fused_pml_kernel = step_curl_and_update_pml!(backend_engine, (wg,))
     sim._cached_source_kernel = update_source!(backend_engine, (wg,))
     sim._cached_dft_kernel = update_dft_monitor!(backend_engine, (wg,))
     sim._cached_dft_chunk_kernel = update_dft_monitor_chunk!(backend_engine, (wg,))

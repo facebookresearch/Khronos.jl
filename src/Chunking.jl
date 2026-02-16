@@ -177,6 +177,8 @@ function classify_region_physics(
             if !isnothing(mat.σB) || !isnothing(mat.σBx) || !isnothing(mat.σBy) || !isnothing(mat.σBz)
                 has_sigma_B = true
             end
+            # Early exit: all material flags found, no need to check more objects
+            (has_epsilon & has_mu & has_sigma_D & has_sigma_B) && break
         end
     end
 
@@ -330,6 +332,31 @@ function _find_material_boundaries(sim::SimulationData, vol::Volume, axis::Int)
     end
 
     sort!(unique!(fracs))
+
+    # Cap candidates to avoid O(candidates × objects) blowup in _find_best_split.
+    # When many geometry objects create hundreds of candidates (e.g., metalens
+    # with thousands of pillars), subsample to keep BSP planning fast while
+    # still covering the split space well. Always preserve PML boundaries.
+    max_candidates = 30
+    if length(fracs) > max_candidates
+        # Keep evenly spaced subset spanning the full range
+        fracs = collect(range(first(fracs), last(fracs), length = max_candidates))
+        # Re-add PML boundaries if they were dropped
+        if !isnothing(sim.boundaries) && length(sim.boundaries) >= axis
+            pml_left = sim.boundaries[axis][1]
+            pml_right = sim.boundaries[axis][2]
+            if pml_left > 0
+                pml_frac = pml_left / vol_extent
+                0.0 < pml_frac < 1.0 && push!(fracs, pml_frac)
+            end
+            if pml_right > 0
+                pml_frac = (vol_extent - pml_right) / vol_extent
+                0.0 < pml_frac < 1.0 && push!(fracs, pml_frac)
+            end
+        end
+        sort!(unique!(fracs))
+    end
+
     return fracs
 end
 
@@ -604,6 +631,54 @@ function _pml_grid_regions(sim::SimulationData)
         end
 
         intervals[axis] = axis_intervals
+    end
+
+    # For distributed execution, sub-divide the longest interior interval so
+    # the greedy load balancer can distribute chunks evenly across ranks.
+    # By refining the Cartesian product grid (rather than post-hoc BSP splitting),
+    # all chunks still share full faces, preserving halo exchange correctness.
+    # Interior sub-chunks inherit PML-free status in the split axis, preserving
+    # Nothing-dispatch kernel specialization.
+    if is_distributed()
+        nranks = mpi_size()
+        # Find the axis whose interior interval has the most grid cells
+        best_axis = 0
+        best_interior_len = 0
+        for axis in 1:ndims
+            for (s, e) in intervals[axis]
+                # An interval is "interior" if it doesn't start at 1 and doesn't
+                # end at N_grid (i.e., not a PML boundary interval)
+                if s > 1 && e < N_grid[axis]
+                    len = e - s + 1
+                    if len > best_interior_len
+                        best_interior_len = len
+                        best_axis = axis
+                    end
+                end
+            end
+        end
+
+        if best_axis > 0 && best_interior_len > 0
+            # Split the interior interval into nranks equal parts
+            n_splits = nranks
+            new_intervals = Tuple{Int,Int}[]
+            for (s, e) in intervals[best_axis]
+                if s > 1 && e < N_grid[best_axis] && (e - s + 1) == best_interior_len
+                    # Sub-divide this interior interval
+                    total = e - s + 1
+                    for k in 1:n_splits
+                        sub_s = s + round(Int, (k - 1) * total / n_splits)
+                        sub_e = s + round(Int, k * total / n_splits) - 1
+                        if sub_s <= sub_e
+                            push!(new_intervals, (sub_s, sub_e))
+                        end
+                    end
+                else
+                    push!(new_intervals, (s, e))
+                end
+            end
+            intervals[best_axis] = new_intervals
+        end
     end
 
     # Take Cartesian product across axes
@@ -886,6 +961,86 @@ end
 # -------------------------------------------------------- #
 
 """
+    _slice_chunk_geometry(sim, spec)
+
+Slice the global `sim.geometry_data` arrays to create per-chunk GeometryData.
+This avoids redundant re-rasterization when global arrays already exist (the
+non-distributed path). CuArray slicing produces a new contiguous GPU array (copy).
+"""
+function _slice_chunk_geometry(sim::SimulationData, spec::ChunkSpec)
+    pf = spec.physics
+    if !pf.has_epsilon && !pf.has_mu && !pf.has_sigma_D && !pf.has_sigma_B
+        return GeometryData{backend_number,backend_array}(ε_inv = one(backend_number), μ_inv = one(backend_number))
+    end
+
+    gd = sim.geometry_data
+    chunk_gv = spec.grid_volume
+    ndims = sim.ndims
+
+    # Helper: slice a global GPU array for a given field component using cuMemcpy3D
+    @inline function _slice(global_arr, component)
+        isnothing(global_arr) && return nothing
+        dims = _get_chunk_component_voxel_count(sim, component, chunk_gv)
+        s = chunk_gv.start_idx
+        if ndims == 2
+            # 2D: use regular indexing (small arrays)
+            return global_arr[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1)]
+        else
+            return _cuda_slice_3d(global_arr, s, dims)
+        end
+    end
+
+    return GeometryData{backend_number,backend_array}(
+        ε_inv_x = _slice(gd.ε_inv_x, Ex()),
+        ε_inv_y = _slice(gd.ε_inv_y, Ey()),
+        ε_inv_z = _slice(gd.ε_inv_z, Ez()),
+        σDx = _slice(gd.σDx, Ex()),
+        σDy = _slice(gd.σDy, Ey()),
+        σDz = _slice(gd.σDz, Ez()),
+        μ_inv = gd.μ_inv,
+        μ_inv_x = _slice(gd.μ_inv_x, Hx()),
+        μ_inv_y = _slice(gd.μ_inv_y, Hy()),
+        μ_inv_z = _slice(gd.μ_inv_z, Hz()),
+        σBx = _slice(gd.σBx, Hx()),
+        σBy = _slice(gd.σBy, Hy()),
+        σBz = _slice(gd.σBz, Hz()),
+    )
+end
+
+"""
+    _cuda_slice_3d(src, start_idx, dims)
+
+Extract a 3D sub-array from a CuArray using CUDA.unsafe_copy3d! (cuMemcpy3DAsync).
+Much faster than CuArray indexing which uses broadcast kernels.
+Falls back to regular indexing for CPU arrays.
+"""
+function _cuda_slice_3d(src::CuArray{T}, start_idx, dims) where T
+    width = dims[1]
+    height = dims[2]
+    depth = dims[3]
+    dst = CuArray{T}(undef, width, height, depth)
+    CUDA.unsafe_copy3d!(
+        pointer(dst), CUDA.DeviceMemory,
+        pointer(src), CUDA.DeviceMemory,
+        width, height, depth;
+        srcPos = (start_idx[1], start_idx[2], start_idx[3]),
+        dstPos = (1, 1, 1),
+        srcPitch = size(src, 1) * sizeof(T),
+        srcHeight = size(src, 2),
+        dstPitch = width * sizeof(T),
+        dstHeight = height,
+        async = true,
+    )
+    return dst
+end
+
+# CPU fallback: regular array indexing
+function _cuda_slice_3d(src::AbstractArray{T}, start_idx, dims) where T
+    s = start_idx
+    return src[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1), s[3]:(s[3]+dims[3]-1)]
+end
+
+"""
     _init_chunk_geometry(sim, spec, geometry)
 
 Voxelize geometry within a chunk's bounds. Chunks without epsilon/mu get
@@ -1069,12 +1224,17 @@ function _assign_sources_to_chunk(sim::SimulationData{N,T,CN,CT,BT}, spec::Chunk
         local_start = overlap_start .- src.gv.start_idx .+ 1
         local_end = overlap_end .- src.gv.start_idx .+ 1
 
-        # Extract the clipped amplitude sub-array
-        clipped_amplitude = src.amplitude_data[
-            local_start[1]:local_end[1],
-            local_start[2]:local_end[2],
-            local_start[3]:local_end[3],
-        ]
+        # Extract the clipped amplitude sub-array using fast 3D copy
+        local_dims = local_end .- local_start .+ 1
+        if ndims(src.amplitude_data) == 3
+            clipped_amplitude = _cuda_slice_3d(src.amplitude_data, local_start, local_dims)
+        else
+            clipped_amplitude = src.amplitude_data[
+                local_start[1]:local_end[1],
+                local_start[2]:local_end[2],
+                local_start[3]:local_end[3],
+            ]
+        end
 
         # Create a new GridVolume for the clipped region
         clipped_gv = GridVolume(
@@ -1127,24 +1287,41 @@ function create_all_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,B
     chunks = ChunkData{N,T,CT,BT}[]
     single_chunk = sim.chunk_plan.total_chunks == 1
 
+    if single_chunk
+        spec = sim.chunk_plan.chunks[1]
+        ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, max(1, spec.grid_volume.Nz))
+        chunk = ChunkData{N,T,CT,BT}(
+            spec, sim.fields, sim.geometry_data, sim.boundary_data,
+            isnothing(sim.source_data) ? SourceData{CT}[] : sim.source_data,
+            sim.monitor_data,
+            HaloConnection[], HaloConnection[],
+            AbstractArray[], AbstractArray[],
+            AbstractArray[], AbstractArray[],
+            ndrange,
+        )
+        push!(chunks, chunk)
+        return chunks
+    end
+
+    # Multi-chunk: two-phase approach to reduce GPU memory pressure.
+    # Phase 1: Slice geometry from global GPU arrays.
+    chunk_geometries = Dict{Int, GeometryData{N,T}}()
+    for spec in sim.chunk_plan.chunks
+        chunk_geometries[spec.id] = _slice_chunk_geometry(sim, spec)
+    end
+
+    # Free global geometry arrays to reclaim GPU memory before allocating fields.
+    sim.geometry_data = GeometryData{N,T}(ε_inv = one(N), μ_inv = one(N))
+    GC.gc(false)
+
+    # Phase 2: Allocate fields, sources, boundaries per chunk.
     for spec in sim.chunk_plan.chunks
         ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, max(1, spec.grid_volume.Nz))
-
-        if single_chunk
-            # Single chunk: wrap existing data (no copy)
-            fields = sim.fields
-            geom = sim.geometry_data
-            bnd = sim.boundary_data
-            src = isnothing(sim.source_data) ? SourceData{CT}[] : sim.source_data
-            mon = sim.monitor_data
-        else
-            # Multi-chunk: allocate per-chunk data
-            fields = _allocate_chunk_fields(sim, spec)
-            geom = _init_chunk_geometry(sim, spec, sim.geometry)
-            bnd = _init_chunk_boundaries(sim, spec)
-            src = _assign_sources_to_chunk(sim, spec)
-            mon = MonitorData[]  # Monitors stay on sim for now
-        end
+        fields = _allocate_chunk_fields(sim, spec)
+        geom = chunk_geometries[spec.id]
+        bnd = _init_chunk_boundaries(sim, spec)
+        src = _assign_sources_to_chunk(sim, spec)
+        mon = MonitorData[]
 
         chunk = ChunkData{N,T,CT,BT}(
             spec, fields, geom, bnd, src, mon,
@@ -1173,12 +1350,35 @@ function create_local_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT
     assignment = sim.chunk_rank_assignment
     chunks = ChunkData{N,T,CT,BT}[]
 
+    # Phase 1: Slice geometry from global GPU arrays (fast GPU-to-GPU copy).
+    # This replaces per-chunk re-rasterization, saving O(N_objects × voxels) work.
+    chunk_geometries = Dict{Int, GeometryData{N,T}}()
+    has_global_geom = !isnothing(sim.geometry_data) &&
+        !isnothing(sim.geometry_data.ε_inv_x)  # check for array-form (not scalar)
+
+    for spec in sim.chunk_plan.chunks
+        assignment[spec.id] != rank && continue
+        if has_global_geom
+            chunk_geometries[spec.id] = _slice_chunk_geometry(sim, spec)
+        end
+    end
+
+    # Free global geometry GPU arrays to reclaim memory before field allocation
+    if has_global_geom
+        sim.geometry_data = GeometryData{N,T}(
+            ε_inv = one(N), μ_inv = one(N))
+        GC.gc(false)  # hint GC to release GPU memory
+    end
+
+    # Phase 2: Create chunks with pre-sliced geometry
     for spec in sim.chunk_plan.chunks
         assignment[spec.id] != rank && continue
         ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, max(1, spec.grid_volume.Nz))
 
         fields = _allocate_chunk_fields(sim, spec)
-        geom = _init_chunk_geometry(sim, spec, sim.geometry)
+        geom = get(chunk_geometries, spec.id) do
+            _init_chunk_geometry(sim, spec, sim.geometry)
+        end
         bnd = _init_chunk_boundaries(sim, spec)
         src = _assign_sources_to_chunk(sim, spec)
         mon = MonitorData[]

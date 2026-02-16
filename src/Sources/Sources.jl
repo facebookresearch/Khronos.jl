@@ -57,7 +57,8 @@ function assemble_sources(sim::SimulationData, source::Source)
     Δ = SVector{3}(Δx, Δy, Δz)
     ndims = sim.ndims::Int
 
-    for component in get_source_components(source)
+    components = get_source_components(source)
+    for component in components
         # create the GridVolume
         gv = GridVolume(sim, src_volume, component)
 
@@ -65,14 +66,11 @@ function assemble_sources(sim::SimulationData, source::Source)
         pol_factor = _get_source_pol_factor(source, component)
 
         # Pre-compute the component origin and grid volume origin ONCE
-        # (avoids per-voxel type-unstable access to sim.Δx/Δy/Δz/cell_size/cell_center)
         origin = SVector{3,Float64}(get_component_origin(sim, gv.component)...)
         gv_origin = get_min_corner(gv)
         cc3 = Float64(sim.cell_center[3])
 
         # Build amplitude data on CPU, then bulk-transfer to GPU.
-        # Uses a function barrier (_fill_amplitude_data!) so Julia can specialize
-        # on the concrete source type and avoid dynamic dispatch per voxel.
         dims = ([gv.Nx, gv.Ny, gv.Nz][1:ndims])
         amplitude_data_cpu = zeros(Complex{Float64}, dims...)
         _fill_amplitude_data!(amplitude_data_cpu, source, component, pol_factor,
@@ -110,22 +108,28 @@ function _fill_amplitude_data!(
     gv_start_1 = gv_origin[1]
     gv_start_2 = gv_origin[2]
     gv_start_3 = gv_origin[3]
-    for i in CartesianIndices(amplitude_data_cpu)
-        t = Tuple(i)
-        ix = t[1]
-        iy = length(t) >= 2 ? t[2] : 0
-        iz = length(t) >= 3 ? t[3] : 0
-        # Inline grid_volume_idx_to_point to avoid type-unstable sim field access
-        px = origin[1] + (ix + gv_start_1 - 2) * Δx
-        py = origin[2] + (iy + gv_start_2 - 2) * Δy
-        pz_raw = origin[3] + (iz + gv_start_3 - 2) * Δz
-        pz = (isinf(pz_raw) || isnan(pz_raw)) ? cc3 : pz_raw
-        point = SVector(px, py, pz)
-        weight = _compute_interpolation_weight_fast(
-            point, min_corner, max_corner, vol_size, ndims, Δ,
-        )
-        profile = _get_source_profile_fast(source, point, component, pol_factor)
-        amplitude_data_cpu[i] = weight * amplitude * profile
+    n1 = size(amplitude_data_cpu, 1)
+    n2 = ndims >= 2 ? size(amplitude_data_cpu, 2) : 1
+    n3 = ndims >= 3 ? size(amplitude_data_cpu, 3) : 1
+    Threads.@threads for ix in 1:n1
+        for iy in 1:n2
+            for iz in 1:n3
+                px = origin[1] + (ix + gv_start_1 - 2) * Δx
+                py = origin[2] + (iy + gv_start_2 - 2) * Δy
+                pz_raw = origin[3] + (iz + gv_start_3 - 2) * Δz
+                pz = (isinf(pz_raw) || isnan(pz_raw)) ? cc3 : pz_raw
+                point = SVector(px, py, pz)
+                weight = _compute_interpolation_weight_fast(
+                    point, min_corner, max_corner, vol_size, ndims, Δ,
+                )
+                profile = _get_source_profile_fast(source, point, component, pol_factor)
+                if ndims == 3
+                    @inbounds amplitude_data_cpu[ix, iy, iz] = weight * amplitude * profile
+                else
+                    @inbounds amplitude_data_cpu[ix, iy] = weight * amplitude * profile
+                end
+            end
+        end
     end
 end
 
@@ -137,15 +141,102 @@ _get_source_pol_factor(::Source, ::Field) = 1.0
 _get_source_pol_factor(source::PlaneWaveSourceData, component::Field) =
     get_planewave_polarization_scaling(source, component)
 
-# PlaneWaveSource: only the phase varies per-voxel; pol_factor is pre-computed
-@inline function _get_source_profile_fast(
-    source::PlaneWaveSourceData, point::SVector{3,Float64},
-    ::Field, pol_factor::Number,
+"""
+    _fill_amplitude_data! (PlaneWaveSource specialization)
+
+Separable 1D optimization: the plane wave profile exp(-im*k*(kx*x + ky*y + kz*z))
+and the interpolation weight w(x,y,z) = wx(x)*wy(y)*wz(z) are both separable.
+Pre-compute 1D phase+weight arrays (N1+N2+N3 exp() calls) instead of computing
+exp() per voxel (N1*N2*N3 calls). For a 880×881×2 source, this reduces from
+1.55M to 1763 complex exponentials.
+"""
+function _fill_amplitude_data!(
+    amplitude_data_cpu::AbstractArray{Complex{Float64}},
+    source::PlaneWaveSourceData, component, pol_factor, amplitude,
+    origin::SVector{3,Float64}, gv_origin, cc3::Float64,
+    Δx::Float64, Δy::Float64, Δz::Float64,
+    min_corner::SVector{3,Float64}, max_corner::SVector{3,Float64},
+    vol_size::SVector{3,Float64}, ndims::Int, Δ::SVector{3,Float64},
 )
+    n1 = size(amplitude_data_cpu, 1)
+    n2 = ndims >= 2 ? size(amplitude_data_cpu, 2) : 1
+    n3 = ndims >= 3 ? size(amplitude_data_cpu, 3) : 1
+
     kv = source.k_vector
+    k = Float64(source.k)
     kx = Float64(kv[1]); ky = Float64(kv[2]); kz = Float64(kv[3])
-    phase = (point[1] * kx + point[2] * ky + point[3] * kz) * Float64(source.k)
-    return pol_factor * exp(-im * phase)
+    gv_start_1 = gv_origin[1]
+    gv_start_2 = gv_origin[2]
+    gv_start_3 = gv_origin[3]
+
+    # Pre-compute 1D combined factors: weight * phase for each coordinate
+    # For Inf-size dimensions, weight = 1.0 everywhere; skip weight computation.
+    cx = Vector{Complex{Float64}}(undef, n1)
+    for ix in 1:n1
+        px = origin[1] + (ix + gv_start_1 - 2) * Δx
+        if isinf(vol_size[1])
+            wx = 1.0
+        else
+            p = SVector(px, 0.0, 0.0)
+            lo = SVector(min_corner[1], 0.0, 0.0)
+            hi = SVector(max_corner[1], 0.0, 0.0)
+            vs = SVector(vol_size[1], 0.0, 0.0)
+            d = SVector(Δ[1], 0.0, 0.0)
+            wx = _compute_interpolation_weight_fast(p, lo, hi, vs, 1, d)
+        end
+        cx[ix] = wx * exp(-im * k * kx * px)
+    end
+
+    cy = Vector{Complex{Float64}}(undef, n2)
+    for iy in 1:n2
+        py = origin[2] + (iy + gv_start_2 - 2) * Δy
+        if isinf(vol_size[2])
+            wy = 1.0
+        else
+            p = SVector(py, 0.0, 0.0)
+            lo = SVector(min_corner[2], 0.0, 0.0)
+            hi = SVector(max_corner[2], 0.0, 0.0)
+            vs = SVector(vol_size[2], 0.0, 0.0)
+            d = SVector(Δ[2], 0.0, 0.0)
+            wy = _compute_interpolation_weight_fast(p, lo, hi, vs, 1, d)
+        end
+        cy[iy] = wy * exp(-im * k * ky * py)
+    end
+
+    cz = Vector{Complex{Float64}}(undef, n3)
+    for iz in 1:n3
+        pz_raw = origin[3] + (iz + gv_start_3 - 2) * Δz
+        pz = (isinf(pz_raw) || isnan(pz_raw)) ? cc3 : pz_raw
+        if isinf(vol_size[3])
+            wz = 1.0
+        else
+            p = SVector(pz, 0.0, 0.0)
+            lo = SVector(min_corner[3], 0.0, 0.0)
+            hi = SVector(max_corner[3], 0.0, 0.0)
+            vs = SVector(vol_size[3], 0.0, 0.0)
+            d = SVector(Δ[3], 0.0, 0.0)
+            wz = _compute_interpolation_weight_fast(p, lo, hi, vs, 1, d)
+        end
+        cz[iz] = wz * exp(-im * k * kz * pz)
+    end
+
+    # Combine separable factors
+    scale = Complex{Float64}(pol_factor * amplitude)
+    Threads.@threads for ix in 1:n1
+        @inbounds cxi = cx[ix]
+        cxi == 0.0 && continue
+        for iy in 1:n2
+            @inbounds cxy = cxi * cy[iy]
+            cxy == 0.0 && continue
+            if ndims == 3
+                for iz in 1:n3
+                    @inbounds amplitude_data_cpu[ix, iy, iz] = cxy * cz[iz] * scale
+                end
+            else
+                @inbounds amplitude_data_cpu[ix, iy] = cxy * scale
+            end
+        end
+    end
 end
 
 # UniformSource: constant profile

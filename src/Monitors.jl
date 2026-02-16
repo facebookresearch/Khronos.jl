@@ -65,11 +65,7 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
     # compute grid volume from dimensions
     gv = GridVolume(sim, vol, monitor.component)
 
-    # Pre-compute constants outside the loop to avoid per-voxel allocations.
-    # The original code allocated [i_1,i_2,i_3], Δ=[Δx,Δy,Δz], and corner
-    # vectors on every iteration. Using SVector and the non-allocating
-    # grid_volume_idx_to_point overload eliminates all heap allocations.
-    scale = create_array_from_gridvolume(sim, gv)
+    # Pre-compute constants
     min_corner = SVector{3}(get_min_corner(vol)...)
     max_corner = SVector{3}(get_max_corner(vol)...)
     vol_size = SVector{3}(vol.size...)
@@ -80,15 +76,40 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
     )
     scale_factor = sim.Δt / sqrt(backend_number(2) * backend_number(π)) * monitor.decimation
 
-    for i_3 in axes(scale, 3)
-        for i_2 in axes(scale, 2)
-            for i_1 in axes(scale, 1)
-                point = grid_volume_idx_to_point(sim, gv, i_1, i_2, i_3)
-                w = _compute_interpolation_weight_fast(
-                    point, min_corner, max_corner, vol_size, sim.ndims, Δ,
-                )
-                scale[i_1, i_2] = w * scale_factor
-            end
+    # The interpolation weight is separable: w(x,y) = w_x(x) * w_y(y).
+    # Pre-compute 1D weight arrays per axis, then outer-product them.
+    # This reduces O(Nx*Ny) expensive weight calls to O(Nx+Ny).
+    origin = get_component_origin(sim, gv.component)
+    gv_origin = get_min_corner(gv)
+
+    wx = Vector{Float64}(undef, gv.Nx)
+    for ix in 1:gv.Nx
+        px = origin[1] + (ix + gv_origin[1] - 2) * sim.Δx
+        p = SVector(px, 0.0, 0.0)
+        lo = SVector(min_corner[1], 0.0, 0.0)
+        hi = SVector(max_corner[1], 0.0, 0.0)
+        vs = SVector(vol_size[1], 0.0, 0.0)
+        d = SVector(Δ[1], 0.0, 0.0)
+        wx[ix] = _compute_interpolation_weight_fast(p, lo, hi, vs, 1, d)
+    end
+
+    wy = Vector{Float64}(undef, gv.Ny)
+    for iy in 1:gv.Ny
+        py = origin[2] + (iy + gv_origin[2] - 2) * sim.Δy
+        p = SVector(py, 0.0, 0.0)
+        lo = SVector(min_corner[2], 0.0, 0.0)
+        hi = SVector(max_corner[2], 0.0, 0.0)
+        vs = SVector(vol_size[2], 0.0, 0.0)
+        d = SVector(Δ[2], 0.0, 0.0)
+        wy[iy] = _compute_interpolation_weight_fast(p, lo, hi, vs, 1, d)
+    end
+
+    # Build 2D scale array via outer product
+    scale = zeros(gv.Nx, gv.Ny)
+    @inbounds for iy in 1:gv.Ny
+        sy = wy[iy] * scale_factor
+        for ix in 1:gv.Nx
+            scale[ix, iy] = wx[ix] * sy
         end
     end
 

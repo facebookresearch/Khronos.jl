@@ -1,48 +1,57 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
-# Metalens Simulation using Khronos.jl
+# Pancharatnam-Berry Phase Metalens — Khronos.jl
 #
-# Reproduces the Tidy3D Pancharatnam-Berry phase metalens benchmark:
-# 153×153 rotated rectangular TiO2 pillars on SiO2 substrate,
-# illuminated with circular polarization at 660 nm, NA=0.8.
+# 3D FDTD simulation of a visible-wavelength metalens: rotated rectangular
+# TiO2 pillars on SiO2 substrate, circularly polarized illumination at 660 nm.
+# Based on the design from Khorasaninejad et al. (Science 2016).
 #
 # Usage:
-#   julia --project=. examples/metalens.jl                    # full 153×153 lens
-#   julia --project=. examples/metalens.jl --small            # small 10×10 test lens
-#   julia --project=. examples/metalens.jl --medium           # medium 50×50 lens
-#   julia --project=. examples/metalens.jl --benchmark        # benchmark mode (no DFT)
-#   julia --project=. examples/metalens.jl --float32          # use Float32 precision
-#   julia --project=. examples/metalens.jl --small --viz      # run small lens with plots
+#   julia --project=. examples/metalens.jl --cells 75 --float32   # 75×75 lens, single GPU
+#   julia --project=. examples/metalens.jl --benchmark --float32   # benchmark (no monitors)
 #
-# Multi-GPU:
-#   mpirun -np N julia --project=. examples/metalens.jl
+#   # Multi-GPU:
+#   ~/.julia/bin/mpiexecjl -np 2 julia -t auto --project=. examples/metalens.jl \
+#       --cells 153 --float32
 
 import Khronos
 using GeometryPrimitives
 using StaticArrays
 using LinearAlgebra
+using CUDA
 
 # ── Parse command-line options ────────────────────────────────────────────────
 
 const USE_SMALL = "--small" in ARGS
 const USE_MEDIUM = "--medium" in ARGS
 const BENCHMARK_MODE = "--benchmark" in ARGS
+const PROFILE_MODE = "--profile" in ARGS
 const USE_FLOAT32 = "--float32" in ARGS
 const ENABLE_VIZ = "--viz" in ARGS
+const CUSTOM_CELLS = let idx = findfirst(==("--cells"), ARGS)
+    idx !== nothing && idx < length(ARGS) ? parse(Int, ARGS[idx+1]) : nothing
+end
+
+# ── MPI initialization (before backend, so is_distributed() is available) ────
+
+const USE_MPI = haskey(ENV, "OMPI_COMM_WORLD_SIZE") || haskey(ENV, "PMI_RANK") || haskey(ENV, "SLURM_PROCID")
+if USE_MPI
+    Khronos.init_mpi!()
+end
 
 # ── Backend selection ─────────────────────────────────────────────────────────
 
 precision = USE_FLOAT32 ? Float32 : Float64
 Khronos.choose_backend(Khronos.CUDADevice(), precision)
 
-# Initialize MPI if running distributed
-if haskey(ENV, "OMPI_COMM_WORLD_SIZE") || haskey(ENV, "PMI_RANK") || haskey(ENV, "SLURM_PROCID")
-    Khronos.init_mpi!()
+if USE_MPI
     Khronos.select_device_for_rank!()
 end
 
+const RANK = USE_MPI ? Khronos.mpi_rank() : 0
+const NRANKS = USE_MPI ? Khronos.mpi_size() : 1
+
 # ── Physical parameters ──────────────────────────────────────────────────────
-# All values from ~/metalens/Metalens_Optimize.py
 
 nm = 1e-3                                # Khronos uses μm
 
@@ -61,10 +70,12 @@ spacing      = 1.0 * wavelength          # 0.660 μm (buffer above/below lens)
 
 # ── Domain size ───────────────────────────────────────────────────────────────
 
-if USE_SMALL
-    side_length = 10 / 1.5 * wavelength  # ~4.4 μm, matching optimize script
+if CUSTOM_CELLS !== nothing
+    side_length = CUSTOM_CELLS * cell_length
+elseif USE_SMALL
+    side_length = 10 / 1.5 * wavelength  # ~4.4 μm
 elseif USE_MEDIUM
-    side_length = 50 * cell_length       # ~21.5 μm, 50 unit cells
+    side_length = 50 * cell_length       # ~21.5 μm
 else
     side_length = 100 * wavelength       # 66.0 μm, full benchmark
 end
@@ -76,14 +87,24 @@ focal_length = length_xy / (2 * NA) * sqrt(1 - NA^2)
 
 length_z = spacing + lens_thick + 1.1 * focal_length + spacing
 
-println("="^60)
-println("Metalens Khronos.jl Simulation")
-println("="^60)
-println("  Lens diameter:    $(round(length_xy, digits=3)) μm ($(N_cells)×$(N_cells) cells)")
-println("  Focal length:     $(round(focal_length, digits=3)) μm")
-println("  Domain size:      $(round(length_xy, digits=3)) × $(round(length_xy, digits=3)) × $(round(length_z, digits=3)) μm")
-println("  Total pillars:    $(N_cells * N_cells)")
-println("  Precision:        $(precision)")
+# ── Chunking ──────────────────────────────────────────────────────────────────
+
+const NUM_CHUNKS = let idx = findfirst(==("--num-chunks"), ARGS)
+    idx !== nothing && idx < length(ARGS) ? parse(Int, ARGS[idx+1]) : :auto
+end
+
+if RANK == 0
+    println("="^60)
+    println("Metalens Khronos.jl Simulation")
+    println("="^60)
+    println("  Lens diameter:    $(round(length_xy, digits=3)) μm ($(N_cells)×$(N_cells) cells)")
+    println("  Focal length:     $(round(focal_length, digits=3)) μm")
+    println("  Domain size:      $(round(length_xy, digits=3)) × $(round(length_xy, digits=3)) × $(round(length_z, digits=3)) μm")
+    println("  Total pillars:    $(N_cells * N_cells)")
+    println("  Precision:        $(precision)")
+    println("  GPUs:             $(NRANKS)")
+    println("  Chunk strategy:   $(NUM_CHUNKS == :auto ? ":auto (PML-grid)" : "BSP $(NUM_CHUNKS) chunks")")
+end
 
 # ── Grid resolution ───────────────────────────────────────────────────────────
 
@@ -94,9 +115,11 @@ resolution = 1.0 / dl                     # ~27.27 pixels/μm
 Nx_est = floor(Int, length_xy * resolution)
 Ny_est = floor(Int, length_xy * resolution)
 Nz_est = floor(Int, length_z * resolution)
-println("  Grid:             $(Nx_est) × $(Ny_est) × $(Nz_est) = $(Nx_est * Ny_est * Nz_est) voxels")
-println("  Resolution:       $(round(resolution, digits=2)) px/μm (dl=$(round(dl*1000, digits=2)) nm)")
-println("="^60)
+if RANK == 0
+    println("  Grid:             $(Nx_est) × $(Ny_est) × $(Nz_est) = $(Nx_est * Ny_est * Nz_est) voxels")
+    println("  Resolution:       $(round(resolution, digits=2)) px/μm (dl=$(round(dl*1000, digits=2)) nm)")
+    println("="^60)
+end
 
 # ── Materials ─────────────────────────────────────────────────────────────────
 
@@ -142,7 +165,7 @@ end
 centers = cell_length .* (0:N_cells-1) .- length_xy / 2 .+ cell_length / 2
 
 # Assemble geometry: substrate + all pillars
-println("Building geometry ($(N_cells * N_cells) pillars)...")
+RANK == 0 && println("Building geometry ($(N_cells * N_cells) pillars)...")
 t_geom = time()
 
 geometry = Khronos.Object[substrate]
@@ -152,7 +175,7 @@ for cx in centers, cy in centers
     push!(geometry, Khronos.Object(make_pillar(cx, cy, pb_theta(cx, cy)), TiO2_mat))
 end
 
-println("  Geometry built in $(round(time() - t_geom, digits=3))s")
+RANK == 0 && println("  Geometry built in $(round(time() - t_geom, digits=3))s")
 
 # ── Sources (circular polarization: Ex + i*Ey) ───────────────────────────────
 
@@ -183,7 +206,6 @@ sources = [source_x, source_y]
 # ── Monitors ──────────────────────────────────────────────────────────────────
 
 z_focal = -length_z / 2 + spacing + lens_thick + focal_length
-z_near  = -length_z / 2 + spacing + lens_thick + spacing / 2
 
 monitors = Khronos.Monitor[]
 
@@ -203,22 +225,6 @@ if !BENCHMARK_MODE
         frequencies = [fcen],
     )
 
-    # XZ cross-section monitor (for field visualization through lens center)
-    mon_xz_ex = Khronos.DFTMonitor(
-        component = Khronos.Ex(),
-        center = [0.0, 0.0, 0.0],
-        size = [length_xy, 0.0, length_z],
-        frequencies = [fcen],
-    )
-
-    # Near-field plane (just above pillars)
-    mon_near_ex = Khronos.DFTMonitor(
-        component = Khronos.Ex(),
-        center = [0.0, 0.0, z_near],
-        size = [length_xy, length_xy, 0.0],
-        frequencies = [fcen],
-    )
-
     # Focal plane H-field monitors for Poynting flux computation
     mon_focal_hx = Khronos.DFTMonitor(
         component = Khronos.Hx(),
@@ -234,8 +240,26 @@ if !BENCHMARK_MODE
         frequencies = [fcen],
     )
 
-    monitors = [mon_focal_ex, mon_focal_ey, mon_xz_ex, mon_near_ex,
-                mon_focal_hx, mon_focal_hy]
+    monitors = [mon_focal_ex, mon_focal_ey, mon_focal_hx, mon_focal_hy]
+
+    # Additional monitors for single-GPU runs (XZ cross-section + near-field)
+    if NRANKS == 1
+        mon_xz_ex = Khronos.DFTMonitor(
+            component = Khronos.Ex(),
+            center = [0.0, 0.0, 0.0],
+            size = [length_xy, 0.0, length_z],
+            frequencies = [fcen],
+        )
+
+        mon_near_ex = Khronos.DFTMonitor(
+            component = Khronos.Ex(),
+            center = [0.0, 0.0, -length_z / 2 + spacing + lens_thick + spacing / 2],
+            size = [length_xy, length_xy, 0.0],
+            frequencies = [fcen],
+        )
+
+        push!(monitors, mon_xz_ex, mon_near_ex)
+    end
 end
 
 # ── Boundaries (PML) ─────────────────────────────────────────────────────────
@@ -249,22 +273,269 @@ sim = Khronos.Simulation(
     cell_size   = [length_xy, length_xy, length_z],
     cell_center = [0.0, 0.0, 0.0],
     resolution  = resolution,
+    Courant     = 0.55,
     geometry    = geometry,
     sources     = sources,
     boundaries  = boundaries,
     monitors    = monitors,
-    num_chunks  = :auto,
+    num_chunks  = NUM_CHUNKS,
 )
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-if BENCHMARK_MODE
-    println("\nRunning benchmark (110 timesteps)...")
+if BENCHMARK_MODE || PROFILE_MODE
+    RANK == 0 && println("\nRunning benchmark (110 timesteps)...")
     timestep_rate = Khronos.run_benchmark(sim, 110)
-    println("\nBenchmark result: $(round(timestep_rate, digits=1)) MVoxels/s")
-    println("                  $(round(timestep_rate / 1000, digits=3)) GVoxels/s")
+    if RANK == 0
+        println("\nBenchmark result: $(round(timestep_rate, digits=1)) MVoxels/s")
+        println("                  $(round(timestep_rate / 1000, digits=3)) GVoxels/s")
+        if NRANKS > 1
+            println("  Per-GPU:        $(round(timestep_rate / NRANKS, digits=1)) MVoxels/s")
+            println("  Scaling eff:    (compare to single-GPU baseline)")
+        end
+    end
+
+    if PROFILE_MODE
+        # Print chunk decomposition
+        if RANK == 0
+            println("\n" * "="^60)
+            println("CHUNK DECOMPOSITION")
+            println("="^60)
+        end
+        for (i, chunk) in enumerate(sim.chunk_data)
+            pf = chunk.spec.physics
+            gv = chunk.spec.grid_volume
+            nvox = gv.Nx * gv.Ny * max(1, gv.Nz)
+            pml_str = join(filter(!isempty, [
+                pf.has_pml_x ? "PML-x" : "",
+                pf.has_pml_y ? "PML-y" : "",
+                pf.has_pml_z ? "PML-z" : "",
+            ]), "+")
+            if isempty(pml_str); pml_str = "interior"; end
+            g = chunk.geometry_data
+            eps_type = (g.ε_inv_x isa AbstractArray) ? "per-voxel-ε($(size(g.ε_inv_x)))" : "scalar-ε=$(g.ε_inv)"
+            mu_type = g.μ_inv isa Real ? "scalar-μ" : "per-voxel-μ"
+            println("  Chunk $i: $(gv.Nx)×$(gv.Ny)×$(gv.Nz) = $(nvox) voxels | $pml_str | $eps_type | $mu_type | src=$(pf.has_sources)")
+        end
+
+        # Profile individual timestep components
+        CUDA.synchronize()
+        println("\n" * "="^60)
+        println("PER-STEP PROFILING (4 steps, GPU-synchronized)")
+        println("="^60)
+
+        for step_i in 1:4
+            t = Khronos.round_time(sim)
+
+            # Source step H
+            t0 = time_ns()
+            if sim.sources_active
+                Khronos.update_magnetic_sources!(sim, t)
+            end
+            CUDA.synchronize()
+            t_srcH = (time_ns() - t0) / 1e6
+
+            # Step H (curl + update for all chunks + halo)
+            t0 = time_ns()
+            Khronos.step_H_fused!(sim)
+            CUDA.synchronize()
+            t_stepH = (time_ns() - t0) / 1e6
+
+            # Monitor H
+            t0 = time_ns()
+            Khronos.update_H_monitors!(sim, t)
+            CUDA.synchronize()
+            t_monH = (time_ns() - t0) / 1e6
+
+            # Source step E
+            t0 = time_ns()
+            if sim.sources_active
+                Khronos.update_electric_sources!(sim, t + sim.Δt / 2)
+            end
+            CUDA.synchronize()
+            t_srcE = (time_ns() - t0) / 1e6
+
+            # Step E
+            t0 = time_ns()
+            Khronos.step_E_fused!(sim)
+            CUDA.synchronize()
+            t_stepE = (time_ns() - t0) / 1e6
+
+            # Monitor E
+            t0 = time_ns()
+            Khronos.update_E_monitors!(sim, t + sim.Δt / 2)
+            CUDA.synchronize()
+            t_monE = (time_ns() - t0) / 1e6
+
+            t0 = time_ns()
+            Khronos.increment_timestep!(sim)
+            t_inc = (time_ns() - t0) / 1e6
+
+            total = t_srcH + t_stepH + t_monH + t_srcE + t_stepE + t_monE + t_inc
+            println("  Step $step_i: total=$(round(total, digits=2))ms | srcH=$(round(t_srcH, digits=2))ms | stepH=$(round(t_stepH, digits=2))ms | monH=$(round(t_monH, digits=2))ms | srcE=$(round(t_srcE, digits=2))ms | stepE=$(round(t_stepE, digits=2))ms | monE=$(round(t_monE, digits=2))ms")
+        end
+
+        # Print chunk voxel budget
+        total_vox = sum(c.ndrange[1] * c.ndrange[2] * c.ndrange[3] for c in sim.chunk_data)
+        pml_vox = sum(c.ndrange[1] * c.ndrange[2] * c.ndrange[3] for c in sim.chunk_data if Khronos.has_any_pml(c.spec.physics))
+        int_vox = total_vox - pml_vox
+        println("\n  Voxel budget (this GPU): total=$(total_vox) | interior=$(int_vox) ($(round(100*int_vox/total_vox, digits=1))%) | PML=$(pml_vox) ($(round(100*pml_vox/total_vox, digits=1))%)")
+
+        # Count chunks by type
+        n_int = count(c -> !Khronos.has_any_pml(c.spec.physics), sim.chunk_data)
+        n_pml_scalar = count(c -> Khronos.has_any_pml(c.spec.physics) && !(c.geometry_data.ε_inv_x isa AbstractArray), sim.chunk_data)
+        n_pml_array = count(c -> Khronos.has_any_pml(c.spec.physics) && (c.geometry_data.ε_inv_x isa AbstractArray), sim.chunk_data)
+        println("  Chunks: $(length(sim.chunk_data)) total | $n_int interior | $n_pml_array PML(per-voxel-ε) | $n_pml_scalar PML(scalar-ε)")
+
+        # ── Detailed per-chunk kernel timing ──
+        # Manually replicates step_H_fused!/step_E_fused! dispatch to time each chunk
+        println("\n" * "="^60)
+        println("PER-CHUNK KERNEL TIMING (4 steps, CUDA events)")
+        println("="^60)
+
+        backend_engine = Khronos.backend_engine
+        cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
+        use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
+        dt_dx = sim.Δt / sim.Δx; dt_dy = sim.Δt / sim.Δy; dt_dz = sim.Δt / sim.Δz
+        bn = Khronos.backend_number
+
+        for step_i in 1:4
+            t = Khronos.round_time(sim)
+            sa = sim.sources_active
+
+            # Source H timing
+            CUDA.synchronize()
+            t0 = time_ns()
+            if sa; Khronos.update_magnetic_sources!(sim, t); end
+            CUDA.synchronize()
+            t_srcH = (time_ns() - t0) / 1e6
+
+            # Per-chunk H timing
+            t_H_int = 0.0; t_H_pml = 0.0
+            for chunk in sim.chunk_data
+                CUDA.synchronize()
+                t0 = time_ns()
+                f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data; nr = chunk.ndrange
+                is_pml = Khronos.has_any_pml(chunk.spec.physics)
+
+                if backend_engine isa Khronos.CUDABackend && !is_pml && !chunk.spec.physics.has_sources && g.μ_inv isa Real
+                    iNx = Int32(nr[1]); nblocks_x = cld(Int(iNx), cuda_wg)
+                    @cuda blocks=(nblocks_x, Int(nr[2]), Int(nr[3])) threads=(cuda_wg,1,1) Khronos._cuda_fused_BH_kernel!(
+                        f.fEx, f.fEy, f.fEz, f.fHx, f.fHy, f.fHz,
+                        bn(g.μ_inv) * bn(dt_dx), bn(g.μ_inv) * bn(dt_dy), bn(g.μ_inv) * bn(dt_dz), iNx)
+                elseif !is_pml
+                    sim._cached_fused_kernel(
+                        f.fEx, f.fEy, f.fEz, f.fBx, f.fBy, f.fBz, f.fHx, f.fHy, f.fHz,
+                        sa ? f.fSBx : nothing, sa ? f.fSBy : nothing, sa ? f.fSBz : nothing,
+                        g.μ_inv, g.μ_inv_x, g.μ_inv_y, g.μ_inv_z,
+                        sim.Δt, sim.Δx, sim.Δy, sim.Δz, 1, ndrange=nr)
+                else
+                    sim._cached_curl_kernel(
+                        f.fEx, f.fEy, f.fEz, f.fBx, f.fBy, f.fBz, f.fCBx, f.fCBy, f.fCBz,
+                        f.fUBx, f.fUBy, f.fUBz, g.σBx, g.σBy, g.σBz, b.σBx, b.σBy, b.σBz,
+                        sim.Δt, sim.Δx, sim.Δy, sim.Δz, 1, ndrange=nr)
+                    sim._cached_update_kernel(
+                        f.fHx, f.fHy, f.fHz, f.fBx, f.fBy, f.fBz,
+                        f.fWBx, f.fWBy, f.fWBz, f.fPBx, f.fPBy, f.fPBz,
+                        sa ? f.fSBx : nothing, sa ? f.fSBy : nothing, sa ? f.fSBz : nothing,
+                        g.μ_inv, g.μ_inv_x, g.μ_inv_y, g.μ_inv_z,
+                        b.σBx, b.σBy, b.σBz, ndrange=nr)
+                end
+                CUDA.synchronize()
+                dt = (time_ns() - t0) / 1e6
+                if is_pml; t_H_pml += dt; else; t_H_int += dt; end
+            end
+
+            # Halo exchange
+            CUDA.synchronize()
+            t0 = time_ns()
+            Khronos.exchange_halos!(sim, :H)
+            CUDA.synchronize()
+            t_halo_H = (time_ns() - t0) / 1e6
+
+            # Monitor H
+            t0 = time_ns()
+            Khronos.update_H_monitors!(sim, t)
+            CUDA.synchronize()
+            t_monH = (time_ns() - t0) / 1e6
+
+            # Source E timing
+            t0 = time_ns()
+            if sa; Khronos.update_electric_sources!(sim, t + sim.Δt / 2); end
+            CUDA.synchronize()
+            t_srcE = (time_ns() - t0) / 1e6
+
+            # Per-chunk E timing
+            t_E_int = 0.0; t_E_pml = 0.0
+            for chunk in sim.chunk_data
+                CUDA.synchronize()
+                t0 = time_ns()
+                f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data; nr = chunk.ndrange
+                is_pml = Khronos.has_any_pml(chunk.spec.physics)
+
+                if backend_engine isa Khronos.CUDABackend && !is_pml && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray
+                    iNx = Int32(nr[1]); nblocks_x = cld(Int(iNx), cuda_wg)
+                    @cuda blocks=(nblocks_x, Int(nr[2]), Int(nr[3])) threads=(cuda_wg,1,1) Khronos._cuda_fused_DE_kernel!(
+                        f.fHx, f.fHy, f.fHz, f.fEx, f.fEy, f.fEz,
+                        g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                        bn(dt_dx), bn(dt_dy), bn(dt_dz), iNx)
+                elseif backend_engine isa Khronos.CUDABackend && !is_pml && !chunk.spec.physics.has_sources && g.ε_inv isa Real
+                    iNx = Int32(nr[1]); nblocks_x = cld(Int(iNx), cuda_wg)
+                    @cuda blocks=(nblocks_x, Int(nr[2]), Int(nr[3])) threads=(cuda_wg,1,1) Khronos._cuda_fused_DE_scalar_kernel!(
+                        f.fHx, f.fHy, f.fHz, f.fEx, f.fEy, f.fEz,
+                        bn(g.ε_inv), bn(dt_dx), bn(dt_dy), bn(dt_dz), iNx)
+                elseif !is_pml
+                    sim._cached_fused_kernel(
+                        f.fHx, f.fHy, f.fHz, f.fDx, f.fDy, f.fDz, f.fEx, f.fEy, f.fEz,
+                        sa ? f.fSDx : nothing, sa ? f.fSDy : nothing, sa ? f.fSDz : nothing,
+                        g.ε_inv, g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                        sim.Δt, sim.Δx, sim.Δy, sim.Δz, -1, ndrange=nr)
+                else
+                    sim._cached_curl_kernel(
+                        f.fHx, f.fHy, f.fHz, f.fDx, f.fDy, f.fDz, f.fCDx, f.fCDy, f.fCDz,
+                        f.fUDx, f.fUDy, f.fUDz, g.σDx, g.σDy, g.σDz, b.σDx, b.σDy, b.σDz,
+                        sim.Δt, sim.Δx, sim.Δy, sim.Δz, -1, ndrange=nr)
+                    sim._cached_update_kernel(
+                        f.fEx, f.fEy, f.fEz, f.fDx, f.fDy, f.fDz,
+                        f.fWDx, f.fWDy, f.fWDz, f.fPDx, f.fPDy, f.fPDz,
+                        sa ? f.fSDx : nothing, sa ? f.fSDy : nothing, sa ? f.fSDz : nothing,
+                        g.ε_inv, g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                        b.σDx, b.σDy, b.σDz, ndrange=nr)
+                end
+                CUDA.synchronize()
+                dt = (time_ns() - t0) / 1e6
+                if is_pml; t_E_pml += dt; else; t_E_int += dt; end
+            end
+
+            # Halo exchange E
+            CUDA.synchronize()
+            t0 = time_ns()
+            Khronos.exchange_halos!(sim, :E)
+            CUDA.synchronize()
+            t_halo_E = (time_ns() - t0) / 1e6
+
+            # Monitor E
+            t0 = time_ns()
+            Khronos.update_E_monitors!(sim, t + sim.Δt / 2)
+            CUDA.synchronize()
+            t_monE = (time_ns() - t0) / 1e6
+
+            Khronos.increment_timestep!(sim)
+
+            total = t_srcH + t_H_int + t_H_pml + t_halo_H + t_monH + t_srcE + t_E_int + t_E_pml + t_halo_E + t_monE
+            println("  Step $step_i: total=$(round(total, digits=1))ms")
+            println("    H: interior=$(round(t_H_int, digits=2))ms | PML=$(round(t_H_pml, digits=2))ms | halo=$(round(t_halo_H, digits=2))ms | src=$(round(t_srcH, digits=2))ms | mon=$(round(t_monH, digits=2))ms")
+            println("    E: interior=$(round(t_E_int, digits=2))ms | PML=$(round(t_E_pml, digits=2))ms | halo=$(round(t_halo_E, digits=2))ms | src=$(round(t_srcE, digits=2))ms | mon=$(round(t_monE, digits=2))ms")
+
+            # Bandwidth analysis for interior
+            int_voxels = sum(c.ndrange[1] * c.ndrange[2] * c.ndrange[3] for c in sim.chunk_data if !Khronos.has_any_pml(c.spec.physics))
+            bh_bw = int_voxels * 36 / (t_H_int * 1e-3) / 1e9
+            de_bw = int_voxels * 48 / (t_E_int * 1e-3) / 1e9
+            println("    BW: BH=$(round(bh_bw, digits=0)) GB/s ($(round(bh_bw/3350*100, digits=1))%) | DE=$(round(de_bw, digits=0)) GB/s ($(round(de_bw/3350*100, digits=1))%)")
+        end
+    end
 else
-    println("\nRunning simulation...")
+    RANK == 0 && println("\nRunning simulation...")
     Khronos.run(sim,
         until_after_sources = Khronos.stop_when_dft_decayed(
             tolerance = 1e-8,
@@ -316,9 +587,10 @@ else
 
     # Poynting flux at focal plane (Sz = Re(Ex * Hy_conj - Ey * Hx_conj))
     # Hx has same stagger as Ey: (Nx+1, Ny), Hy same as Ex: (Nx, Ny+1)
-    if length(sim.monitors) >= 6
-        Hx_raw = Array(sim.monitors[5].monitor_data.fields)[:,:,1,1]  # (Nx+1, Ny)
-        Hy_raw = Array(sim.monitors[6].monitor_data.fields)[:,:,1,1]  # (Nx, Ny+1)
+    # Monitors: [1]=Ex, [2]=Ey, [3]=Hx, [4]=Hy at focal plane
+    if length(sim.monitors) >= 4
+        Hx_raw = Array(sim.monitors[3].monitor_data.fields)[:,:,1,1]  # (Nx+1, Ny)
+        Hy_raw = Array(sim.monitors[4].monitor_data.fields)[:,:,1,1]  # (Nx, Ny+1)
         Hx_focal = (Hx_raw[1:end-1, :] .+ Hx_raw[2:end, :]) ./ 2    # (Nx, Ny)
         Hy_focal = (Hy_raw[:, 1:end-1] .+ Hy_raw[:, 2:end]) ./ 2    # (Nx, Ny)
         Hx_focal = Hx_focal[1:nx_common, 1:ny_common]
@@ -374,25 +646,26 @@ else
         save(joinpath(outdir, "focal_linecuts.png"), fig2)
         println("  Saved focal_linecuts.png")
 
-        # 3. XZ cross-section from DFT monitor (monitor index 3)
-        xz_raw = Array(sim.monitors[3].monitor_data.fields)[:,:,1,1]
-        xz_intensity = abs2.(xz_raw)
-        nxz_x, nxz_z = size(xz_intensity)
-        xs_xz = range(-length_xy/2, length_xy/2, length=nxz_x)
-        zs_xz = range(-length_z/2, length_z/2, length=nxz_z)
+        # 3. XZ cross-section (monitor index 5, single-GPU only)
+        if length(sim.monitors) >= 5
+            xz_raw = Array(sim.monitors[5].monitor_data.fields)[:,:,1,1]
+            xz_intensity = abs2.(xz_raw)
+            nxz_x, nxz_z = size(xz_intensity)
+            xs_xz = range(-length_xy/2, length_xy/2, length=nxz_x)
+            zs_xz = range(-length_z/2, length_z/2, length=nxz_z)
 
-        fig3 = Figure(size=(900, 400))
-        ax3 = Axis(fig3[1, 1],
-            title = "XZ Cross-Section |Ex|² (y=0)",
-            xlabel = "x (μm)", ylabel = "z (μm)", aspect = DataAspect())
-        hm3 = heatmap!(ax3, collect(xs_xz), collect(zs_xz), xz_intensity, colormap = :inferno)
-        # Mark focal plane and pillar region
-        hlines!(ax3, [z_focal], color = :cyan, linestyle = :dash, linewidth = 1)
-        hlines!(ax3, [center_z - lens_thick/2, center_z + lens_thick/2],
-                color = :white, linestyle = :dot, linewidth = 1)
-        Colorbar(fig3[1, 2], hm3, label = "|Ex|² (a.u.)")
-        save(joinpath(outdir, "xz_cross_section.png"), fig3)
-        println("  Saved xz_cross_section.png")
+            fig3 = Figure(size=(900, 400))
+            ax3 = Axis(fig3[1, 1],
+                title = "XZ Cross-Section |Ex|² (y=0)",
+                xlabel = "x (μm)", ylabel = "z (μm)", aspect = DataAspect())
+            hm3 = heatmap!(ax3, collect(xs_xz), collect(zs_xz), xz_intensity, colormap = :inferno)
+            hlines!(ax3, [z_focal], color = :cyan, linestyle = :dash, linewidth = 1)
+            hlines!(ax3, [center_z - lens_thick/2, center_z + lens_thick/2],
+                    color = :white, linestyle = :dot, linewidth = 1)
+            Colorbar(fig3[1, 2], hm3, label = "|Ex|² (a.u.)")
+            save(joinpath(outdir, "xz_cross_section.png"), fig3)
+            println("  Saved xz_cross_section.png")
+        end
 
         # 4. Poynting flux heatmap at focal plane
         if @isdefined(Sz)
@@ -406,13 +679,12 @@ else
             println("  Saved focal_poynting.png")
         end
 
-        # 5. Geometry cross-section through pillar layer
-        fig5 = Khronos.plot2D(sim, nothing,
-            Khronos.Volume(center=[0.0, 0.0, center_z], size=[length_xy, length_xy, 0.0]),
-            plot_geometry=true)
-        save(joinpath(outdir, "geometry_xy.png"), fig5)
-        println("  Saved geometry_xy.png")
-
         println("  All plots saved to $(outdir)/")
     end
+end
+
+# ── MPI cleanup ──────────────────────────────────────────────────────────────
+if USE_MPI
+    using MPI
+    MPI.Finalize()
 end
