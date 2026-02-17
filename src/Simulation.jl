@@ -165,7 +165,19 @@ function prepare_simulation!(sim::SimulationData)
     t6 = time()
     if !is_distributed() || is_root()
         @info("  create_chunks:   $(round(t6-t5, digits=3))s")
-        @info("  Total prepare:   $(round(t6-t_start, digits=3))s")
+    end
+
+    # Initialize dispersive polarization (ADE) if any materials have susceptibilities
+    init_polarization!(sim)
+    t6b = time()
+    if any_material_has_susceptibilities(sim.geometry)
+        if !is_distributed() || is_root()
+            @info("  init_polariz.:   $(round(t6b-t6, digits=3))s")
+        end
+    end
+
+    if !is_distributed() || is_root()
+        @info("  Total prepare:   $(round(t6b-t_start, digits=3))s")
     end
 
     sim.is_prepared = true

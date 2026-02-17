@@ -37,6 +37,10 @@ function step!(sim::SimulationData)
         CUDA.launch(sim._cuda_graph_exec_H)
         update_H_monitors!(sim, t)
         CUDA.launch(sim._cuda_graph_exec_E)
+        # ADE polarization update AFTER E update (semi-implicit meep ordering):
+        # E^{n+1} = ε_inv_eff * (D^{n+1} - P^n), then P^{n+1} = f(P^n, P^{n-1}, E^{n+1}).
+        # The chi1 correction in ε_inv_eff accounts for P's response to the new E.
+        step_polarization!(sim)
         update_E_monitors!(sim, t + sim.Δt / 2)
         increment_timestep!(sim)
         return
@@ -47,6 +51,8 @@ function step!(sim::SimulationData)
         CUDA.launch(sim._cuda_graph_exec_H)
         update_H_monitors!(sim, t)
         CUDA.launch(sim._cuda_graph_exec_E)
+        # ADE polarization update AFTER E update (semi-implicit meep ordering)
+        step_polarization!(sim)
         update_E_monitors!(sim, t + sim.Δt / 2)
         increment_timestep!(sim)
         return
@@ -66,6 +72,12 @@ function step!(sim::SimulationData)
     end
 
     step_E_fused!(sim)
+
+    # ADE polarization update AFTER E update (semi-implicit meep ordering):
+    # E^{n+1} uses old P^n (with chi1 correction in ε_inv_eff), then P^{n+1}
+    # is computed using the new E^{n+1}. This matches meep/src/step.cpp where
+    # susceptibility P is updated after E, creating the correct semi-implicit coupling.
+    step_polarization!(sim)
 
     update_E_monitors!(sim, t + sim.Δt / 2)
 
@@ -767,6 +779,7 @@ function step_H_fused!(sim::SimulationData)
                 sa ? f.fSBx : nothing,
                 sa ? f.fSBy : nothing,
                 sa ? f.fSBz : nothing,
+                nothing, nothing, nothing,  # No P for H update
                 g.μ_inv, g.μ_inv_x, g.μ_inv_y, g.μ_inv_z,
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
@@ -846,8 +859,9 @@ function step_E_fused!(sim::SimulationData)
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray
+        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA path: per-voxel ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
+            # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
             @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_kernel!(
@@ -856,8 +870,9 @@ function step_E_fused!(sim::SimulationData)
                 g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
                 iNx)
-        elseif backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real
+        elseif backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA path: scalar ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
+            # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
             @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_scalar_kernel!(
@@ -876,6 +891,7 @@ function step_E_fused!(sim::SimulationData)
                 sa ? f.fSDx : nothing,
                 sa ? f.fSDy : nothing,
                 sa ? f.fSDz : nothing,
+                f.fPDx, f.fPDy, f.fPDz,
                 g.ε_inv, g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
@@ -1151,6 +1167,7 @@ end
     Tx, Ty, Tz,                             # timestepped fields (B or D) - read-write
     Ox, Oy, Oz,                             # output fields (H or E) - write
     Sx, Sy, Sz,                             # source fields (optional, read+clear)
+    @Const(Px), @Const(Py), @Const(Pz),   # polarization fields (optional, read)
     @Const(m_inv),                          # scalar material inverse (can be Nothing)
     @Const(m_inv_x), @Const(m_inv_y), @Const(m_inv_z),  # per-voxel material (can be Nothing)
     Δt, Δx, Δy, Δz,
@@ -1165,6 +1182,7 @@ end
     Kx = Δt * curl_x!(Ay, Az, Δy, Δz, idx_curl, fx, fy, fz)
     Tx[fidx] = Tx[fidx] + Kx
     net_x = Tx[fidx] + update_cache(Sx, fidx)
+    net_x -= update_cache(Px, fidx)
     clear_source(Sx, fidx)
     Ox[fidx] = get_m_inv(m_inv, m_inv_x, gidx) * net_x
 
@@ -1172,6 +1190,7 @@ end
     Ky = Δt * curl_y!(Az, Ax, Δz, Δx, idx_curl, fx, fy, fz)
     Ty[fidx] = Ty[fidx] + Ky
     net_y = Ty[fidx] + update_cache(Sy, fidx)
+    net_y -= update_cache(Py, fidx)
     clear_source(Sy, fidx)
     Oy[fidx] = get_m_inv(m_inv, m_inv_y, gidx) * net_y
 
@@ -1179,6 +1198,7 @@ end
     Kz = Δt * curl_z!(Ax, Ay, Δx, Δy, idx_curl, fx, fy, fz)
     Tz[fidx] = Tz[fidx] + Kz
     net_z = Tz[fidx] + update_cache(Sz, fidx)
+    net_z -= update_cache(Pz, fidx)
     clear_source(Sz, fidx)
     Oz[fidx] = get_m_inv(m_inv, m_inv_z, gidx) * net_z
 end
@@ -1301,6 +1321,8 @@ end
 
 function update_H_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
+        # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
+        hasfield(typeof(m), :component) || continue
         if is_magnetic(m.component)
             update_monitor(sim, m, time)
         end
@@ -1312,6 +1334,8 @@ end
 
 function update_E_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
+        # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
+        hasfield(typeof(m), :component) || continue
         if is_electric(m.component)
             update_monitor(sim, m, time)
         end
@@ -1496,7 +1520,7 @@ end
     W_old = W[idx_array] # cache
     net_field = T[idx_array]
     net_field += update_cache(S, idx_array)
-    net_field += update_cache(P, idx_array)
+    net_field -= update_cache(P, idx_array)  # D - P: polarization subtracted (D = ε_∞·E + P)
     clear_source(S, idx_array)
     W[idx_array] = m_inv * net_field
     A[idx_array] = A[idx_array] + (1 + σ) * W[idx_array] - (1 - σ) * W_old
@@ -1505,7 +1529,7 @@ end
 @inline function update_field_generic(A, T, W::Nothing, P, S, m_inv, σ::Nothing, idx_array)
     net_field = T[idx_array]
     net_field += update_cache(S, idx_array)
-    net_field += update_cache(P, idx_array)
+    net_field -= update_cache(P, idx_array)  # D - P: polarization subtracted (D = ε_∞·E + P)
     clear_source(S, idx_array)
     A[idx_array] = m_inv * net_field
 end
@@ -1525,7 +1549,7 @@ end
     W_old = W[idx_array]
     net_field = T_val
     net_field += update_cache(S, idx_array)
-    net_field += update_cache(P, idx_array)
+    net_field -= update_cache(P, idx_array)  # D - P: polarization subtracted (D = ε_∞·E + P)
     clear_source(S, idx_array)
     W[idx_array] = m_inv * net_field
     A[idx_array] = A[idx_array] + (1 + σ) * W[idx_array] - (1 - σ) * W_old
@@ -1534,7 +1558,7 @@ end
 @inline function update_field_from_T(A, T_val, W::Nothing, P, S, m_inv, σ::Nothing, idx_array)
     net_field = T_val
     net_field += update_cache(S, idx_array)
-    net_field += update_cache(P, idx_array)
+    net_field -= update_cache(P, idx_array)  # D - P: polarization subtracted (D = ε_∞·E + P)
     clear_source(S, idx_array)
     A[idx_array] = m_inv * net_field
 end
@@ -1597,4 +1621,175 @@ end
         get_σ(σz, iz),
         fidx,
     )
+end
+
+# ------------------------------------------------------------------- #
+# ADE (Auxiliary Differential Equation) polarization update kernel
+# for dispersive materials (Drude/Lorentz susceptibilities).
+#
+# Reference: meep/src/susceptibility.cpp:188-262
+# ------------------------------------------------------------------- #
+
+"""
+    update_polarization_kernel!(Px, Py, Pz, Px_prev, Py_prev, Pz_prev,
+                                Ex, Ey, Ez, sigma_x, sigma_y, sigma_z,
+                                gamma1_inv, gamma1, omega0_dt_sq,
+                                sigma_omega0_dt_sq, drude_coeff, is_drude)
+
+KernelAbstractions kernel for advancing one Lorentzian/Drude ADE pole by one timestep.
+sigma_x/y/z are per-voxel oscillator strengths; the ADE coefficients do NOT include sigma.
+
+The update equation for Lorentz (ω₀ ≠ 0):
+    P^{n+1} = γ₁_inv * (P^n * (2 - ω₀²Δt²) - γ₁ * P^{n-1} + ω₀²Δt² * σ_voxel * E^n)
+
+For Drude (ω₀ = 0):
+    P^{n+1} = γ₁_inv * (2*P^n - γ₁*P^{n-1} + γ*2πΔt * σ_voxel * E^n)
+"""
+@kernel function update_polarization_kernel!(
+    Px, Py, Pz,
+    Px_prev, Py_prev, Pz_prev,
+    @Const(Ex), @Const(Ey), @Const(Ez),
+    @Const(sigma_x), @Const(sigma_y), @Const(sigma_z),
+    gamma1_inv::T, gamma1::T, omega0_dt_sq::T,
+    sigma_omega0_dt_sq::T, drude_coeff::T, is_drude_int::Int32,
+) where {T}
+    ix, iy, iz = @index(Global, NTuple)
+    gidx = CartesianIndex(ix, iy, iz)
+    fidx = CartesianIndex(ix + 1, iy + 1, iz + 1)  # +1 for ghost cell offset
+
+    sx = sigma_x[gidx]
+    sy = sigma_y[gidx]
+    sz = sigma_z[gidx]
+
+    # Only update voxels with non-zero sigma (dispersive material present)
+    if !(sx == 0 && sy == 0 && sz == 0)
+        if is_drude_int == Int32(1)
+            # Drude: ω₀ = 0
+            # P^{n+1} = γ₁_inv * (2*P^n - γ₁*P^{n-1} + drude_coeff * σ * E^n)
+            # x-component
+            if sx != 0
+                px = Px[fidx]
+                Px[fidx] = gamma1_inv * (2 * px - gamma1 * Px_prev[fidx] + drude_coeff * sx * Ex[fidx])
+                Px_prev[fidx] = px
+            end
+            # y-component
+            if sy != 0
+                py = Py[fidx]
+                Py[fidx] = gamma1_inv * (2 * py - gamma1 * Py_prev[fidx] + drude_coeff * sy * Ey[fidx])
+                Py_prev[fidx] = py
+            end
+            # z-component
+            if sz != 0
+                pz = Pz[fidx]
+                Pz[fidx] = gamma1_inv * (2 * pz - gamma1 * Pz_prev[fidx] + drude_coeff * sz * Ez[fidx])
+                Pz_prev[fidx] = pz
+            end
+        else
+            # Lorentz: ω₀ ≠ 0
+            # P^{n+1} = γ₁_inv * (P^n * (2 - ω₀²Δt²) - γ₁*P^{n-1} + σ*ω₀²Δt² * E^n)
+            coeff_p = 2 - omega0_dt_sq
+            # x-component
+            if sx != 0
+                px = Px[fidx]
+                Px[fidx] = gamma1_inv * (coeff_p * px - gamma1 * Px_prev[fidx] + sigma_omega0_dt_sq * sx * Ex[fidx])
+                Px_prev[fidx] = px
+            end
+            # y-component
+            if sy != 0
+                py = Py[fidx]
+                Py[fidx] = gamma1_inv * (coeff_p * py - gamma1 * Py_prev[fidx] + sigma_omega0_dt_sq * sy * Ey[fidx])
+                Py_prev[fidx] = py
+            end
+            # z-component
+            if sz != 0
+                pz = Pz[fidx]
+                Pz[fidx] = gamma1_inv * (coeff_p * pz - gamma1 * Pz_prev[fidx] + sigma_omega0_dt_sq * sz * Ez[fidx])
+                Pz_prev[fidx] = pz
+            end
+        end
+    end
+end
+
+"""
+    accumulate_polarization_kernel!(fPDx, fPDy, fPDz, Px, Py, Pz)
+
+Add one pole's polarization to the total P-field arrays (fPDx/y/z).
+"""
+@kernel function accumulate_polarization_kernel!(
+    fPDx, fPDy, fPDz,
+    @Const(Px), @Const(Py), @Const(Pz),
+)
+    ix, iy, iz = @index(Global, NTuple)
+    fidx = CartesianIndex(ix + 1, iy + 1, iz + 1)
+    fPDx[fidx] += Px[fidx]
+    fPDy[fidx] += Py[fidx]
+    fPDz[fidx] += Pz[fidx]
+end
+
+"""
+    zero_polarization_kernel!(fPDx, fPDy, fPDz)
+
+Zero out the total P-field arrays before re-accumulation.
+"""
+@kernel function zero_polarization_kernel!(fPDx, fPDy, fPDz)
+    ix, iy, iz = @index(Global, NTuple)
+    fidx = CartesianIndex(ix + 1, iy + 1, iz + 1)
+    fPDx[fidx] = zero(eltype(fPDx))
+    fPDy[fidx] = zero(eltype(fPDy))
+    fPDz[fidx] = zero(eltype(fPDz))
+end
+
+"""
+    step_polarization!(sim::SimulationData)
+
+Advance all dispersive polarization poles by one timestep using the ADE method.
+Called after `step_E_fused!` in the main `step!` loop.
+
+For each chunk with polarization data:
+1. Zero the total P-field arrays (fPDx/fPDy/fPDz)
+2. For each pole: run the ADE update kernel
+3. Accumulate each pole's P into the total P-field arrays
+"""
+function step_polarization!(sim::SimulationData)
+    isnothing(sim.chunk_data) && return
+
+    wg = parse(Int, get(ENV, "KHRONOS_WORKGROUP_SIZE", "64"))
+    ade_kernel = update_polarization_kernel!(backend_engine, (wg,))
+    accum_kernel = accumulate_polarization_kernel!(backend_engine, (wg,))
+    zero_kernel = zero_polarization_kernel!(backend_engine, (wg,))
+
+    for chunk in sim.chunk_data
+        pd = chunk.polarization_data
+        isnothing(pd) && continue
+        isempty(pd.poles) && continue
+
+        f = chunk.fields
+        nr = chunk.ndrange
+
+        # Zero total P-fields
+        zero_kernel(f.fPDx, f.fPDy, f.fPDz, ndrange=nr)
+
+        # Update each pole and accumulate
+        for pole in pd.poles
+            coeffs = pole.coeffs
+            ade_kernel(
+                pole.Px, pole.Py, pole.Pz,
+                pole.Px_prev, pole.Py_prev, pole.Pz_prev,
+                f.fEx, f.fEy, f.fEz,
+                pole.sigma_x, pole.sigma_y, pole.sigma_z,
+                backend_number(coeffs.gamma1_inv),
+                backend_number(coeffs.gamma1),
+                backend_number(coeffs.omega0_dt_sq),
+                backend_number(coeffs.sigma_omega0_dt_sq),
+                backend_number(coeffs.drude_coeff),
+                Int32(coeffs.is_drude ? 1 : 0),
+                ndrange=nr,
+            )
+
+            # Accumulate into total P
+            accum_kernel(f.fPDx, f.fPDy, f.fPDz,
+                        pole.Px, pole.Py, pole.Pz,
+                        ndrange=nr)
+        end
+    end
 end

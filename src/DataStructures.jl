@@ -237,7 +237,7 @@ end
     σBy::Union{Nothing,N} = nothing
     σBz::Union{Nothing,N} = nothing
 
-    #TODO: add info relevant for polarizability
+    susceptibilities::Vector{Susceptibility} = Susceptibility[]
 end
 
 @with_kw struct Object
@@ -249,7 +249,33 @@ end
 # Polarizability.jl
 # -------------------------------------------------------- #
 
-# TODO
+"""
+    PolarizationPoleState{T}
+
+Per-pole polarization state for ADE (Auxiliary Differential Equation) updates.
+Each pole of each susceptibility has its own pair of current/previous P arrays.
+"""
+struct PolarizationPoleState{T}
+    Px::T              # current polarization x-component
+    Py::T              # current polarization y-component
+    Pz::T              # current polarization z-component
+    Px_prev::T         # previous-step polarization x-component
+    Py_prev::T         # previous-step polarization y-component
+    Pz_prev::T         # previous-step polarization z-component
+    sigma_x::T         # per-voxel coupling strength (0 in free space) for x
+    sigma_y::T         # per-voxel coupling strength for y
+    sigma_z::T         # per-voxel coupling strength for z
+    coeffs::ADECoefficients  # pre-computed update coefficients
+end
+
+"""
+    PolarizationData{T}
+
+Container for all dispersive polarization data associated with a chunk.
+"""
+struct PolarizationData
+    poles::Vector{<:PolarizationPoleState}
+end
 
 # -------------------------------------------------------- #
 # Monitors.jl
@@ -297,8 +323,63 @@ end
 end
 
 # -------------------------------------------------------- #
-# Simulation.jl
+# Near2Far.jl
 # -------------------------------------------------------- #
+
+"""
+    Near2FarMonitorData
+
+Internal data structure for near-to-far field computation. Stores references
+to the 4 tangential DFT monitors (2 E + 2 H) and observation point info.
+"""
+@with_kw mutable struct Near2FarMonitorData <: MonitorData
+    normal_axis::Int                              # 1=x, 2=y, 3=z
+    normal_sign::Float64                          # +1 or -1
+    tangential_E_monitors::Vector{DFTMonitor}     # 2 tangential E-field DFT monitors
+    tangential_H_monitors::Vector{DFTMonitor}     # 2 tangential H-field DFT monitors
+    frequencies::Vector{Float64}
+    medium_eps::Float64 = 1.0
+    medium_mu::Float64 = 1.0
+    observation_points::Union{Nothing, Matrix{Float64}} = nothing  # Nx3
+    theta::Union{Nothing, Vector{Float64}} = nothing
+    phi::Union{Nothing, Vector{Float64}} = nothing
+    r::Float64 = 1e6
+    dx::Float64 = 0.0   # grid spacing (for Yee offset corrections in near2far)
+    dy::Float64 = 0.0
+    dz::Float64 = 0.0
+    # Physical position of each component's first DFT grid point [x,y,z].
+    # Computed from get_component_origin + (start_idx - 1) * Δ.
+    # These give exact Yee-grid-aware coordinates for near2far integration.
+    e1_base::Vector{Float64} = Float64[]
+    e2_base::Vector{Float64} = Float64[]
+    h1_base::Vector{Float64} = Float64[]
+    h2_base::Vector{Float64} = Float64[]
+end
+
+"""
+    Near2FarMonitor
+
+Monitor that records tangential E/H fields on a planar surface and computes
+far-field radiation patterns via the surface equivalence principle.
+
+Two modes:
+1. Angular mode: specify `theta`/`phi` arrays → far-field at distance `r`
+2. Point mode: specify `observation_points` (Nx3 matrix) → full Green's function
+"""
+@with_kw mutable struct Near2FarMonitor <: Monitor
+    center::Vector{<:Number}
+    size::Vector{<:Number}          # one dimension must be 0 (planar surface)
+    frequencies::Vector{<:Number}
+    observation_points::Union{Nothing, Matrix{<:Number}} = nothing
+    theta::Union{Nothing, Vector{<:Number}} = nothing
+    phi::Union{Nothing, Vector{<:Number}} = nothing
+    r::Float64 = 1e6
+    normal_dir::Symbol = :+         # :+ or :- outward normal direction
+    medium_eps::Float64 = 1.0
+    medium_mu::Float64 = 1.0
+    decimation::Int64 = 1
+    monitor_data::Union{Nothing, Near2FarMonitorData} = nothing
+end
 
 # -------------------------------------------------------- #
 # Chunking.jl
@@ -320,6 +401,7 @@ struct PhysicsFlags
     has_pml_z::Bool
     has_sources::Bool
     has_monitors::Bool
+    has_polarizability::Bool
 end
 
 function PhysicsFlags(;
@@ -332,10 +414,12 @@ function PhysicsFlags(;
     has_pml_z::Bool = false,
     has_sources::Bool = false,
     has_monitors::Bool = false,
+    has_polarizability::Bool = false,
 )
     PhysicsFlags(
         has_epsilon, has_mu, has_sigma_D, has_sigma_B,
         has_pml_x, has_pml_y, has_pml_z, has_sources, has_monitors,
+        has_polarizability,
     )
 end
 
@@ -391,6 +475,7 @@ mutable struct ChunkData{N,T,CT,BT}
     boundary_data::BoundaryData{T}
     source_data::Vector{SourceData{CT}}
     monitor_data::Vector{MonitorData}
+    polarization_data::Union{Nothing,PolarizationData}
     halo_send::Vector{HaloConnection}
     halo_recv::Vector{HaloConnection}
     halo_send_buffers::Vector{AbstractArray}

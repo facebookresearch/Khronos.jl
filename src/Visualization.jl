@@ -6,7 +6,8 @@
 using CairoMakie
 using Statistics
 
-export plot2D, plot_monitor, plot_timesource, plot_source
+export plot2D, plot_monitor, plot_timesource, plot_source,
+       plot_geometry_slice, plot_geometry_cross_sections, sample_geometry_slice
 
 Makie.inline!(true)
 
@@ -347,4 +348,209 @@ function _pull_field_slices(sim::SimulationData, component::Field, vol::Volume)
     XY_slice = mean(current_fields[_get_plane_ranges(gv_z)...], dims = 3)[:, :, 1]
 
     return (XY_slice, XZ_slice, YZ_slice)
+end
+
+# ---------------------------------------------------- #
+# Geometry cross-section from shape primitives (meep-style)
+# ---------------------------------------------------- #
+
+"""
+    sample_geometry_slice(geometry, normal_axis, slice_pos;
+        x_range, y_range, resolution=300)
+
+Sample permittivity on a 2D plane by evaluating geometry shape primitives
+directly. No simulation or GPU rasterization needed.
+
+Returns `(eps_data, xs, ys)` where `eps_data` is a `resolution × resolution`
+matrix of real permittivity values, and `xs`/`ys` are the coordinate ranges
+for the two in-plane axes.
+
+# Arguments
+- `geometry::Vector{Object}`: geometry list (first object = highest priority)
+- `normal_axis::Symbol`: `:x`, `:y`, or `:z` — the axis perpendicular to the slice
+- `slice_pos::Real`: position along the normal axis
+- `x_range::Tuple`: `(min, max)` for the horizontal in-plane axis
+- `y_range::Tuple`: `(min, max)` for the vertical in-plane axis
+- `resolution::Int`: number of sample points per axis (default 300)
+"""
+function sample_geometry_slice(
+    geometry::Vector{Object},
+    normal_axis::Symbol,
+    slice_pos::Real;
+    x_range::Tuple{<:Real,<:Real},
+    y_range::Tuple{<:Real,<:Real},
+    resolution::Int = 300,
+)
+    # Map normal axis to dimension indices
+    if normal_axis == :x
+        ax1, ax2, ax_n = 2, 3, 1
+    elseif normal_axis == :y
+        ax1, ax2, ax_n = 1, 3, 2
+    elseif normal_axis == :z
+        ax1, ax2, ax_n = 1, 2, 3
+    else
+        error("normal_axis must be :x, :y, or :z")
+    end
+
+    xs = range(Float64(x_range[1]), Float64(x_range[2]), length = resolution)
+    ys = range(Float64(y_range[1]), Float64(y_range[2]), length = resolution)
+
+    eps_data = ones(Float64, resolution, resolution)  # free space ε = 1
+
+    for iy in 1:resolution, ix in 1:resolution
+        p = MVector{3,Float64}(0.0, 0.0, 0.0)
+        p[ax1] = xs[ix]
+        p[ax2] = ys[iy]
+        p[ax_n] = Float64(slice_pos)
+
+        sv = SVector{3,Float64}(p)
+        idx = findfirst(sv, geometry)
+        if !isnothing(idx)
+            mat = geometry[idx].material
+            ε_val = isnothing(mat.ε) ? 1.0 : Float64(real(mat.ε))
+            eps_data[ix, iy] = ε_val
+        end
+    end
+
+    return (eps_data, collect(xs), collect(ys))
+end
+
+"""
+    plot_geometry_slice(geometry, normal_axis, slice_pos;
+        x_range, y_range, resolution=300, colormap=:viridis,
+        title="", label_units="μm")
+
+Create a 2D cross-section plot of the geometry by directly evaluating shape
+primitives at each pixel. Works like meep's `sim.plot2D()` but operates on
+the geometry definition alone — no simulation or GPU needed.
+
+# Arguments
+- `geometry::Vector{Object}`: geometry list (first object = highest priority)
+- `normal_axis::Symbol`: `:x`, `:y`, or `:z`
+- `slice_pos::Real`: position along the normal axis
+- `x_range::Tuple`: `(min, max)` for horizontal axis
+- `y_range::Tuple`: `(min, max)` for vertical axis
+- `resolution::Int`: pixels per axis (default 300)
+- `colormap`: CairoMakie colormap (default `:viridis`)
+- `title::String`: plot title (auto-generated if empty)
+- `label_units::String`: unit label for axes (default `"μm"`)
+"""
+function plot_geometry_slice(
+    geometry::Vector{Object},
+    normal_axis::Symbol,
+    slice_pos::Real;
+    x_range::Tuple{<:Real,<:Real},
+    y_range::Tuple{<:Real,<:Real},
+    resolution::Int = 300,
+    colormap = :viridis,
+    title::String = "",
+    label_units::String = "μm",
+)
+    eps_data, xs, ys = sample_geometry_slice(
+        geometry, normal_axis, slice_pos;
+        x_range = x_range, y_range = y_range, resolution = resolution,
+    )
+
+    # Axis labels based on normal direction
+    axis_labels = Dict(:x => ("y", "z"), :y => ("x", "z"), :z => ("x", "y"))
+    xlabel, ylabel = axis_labels[normal_axis]
+
+    auto_title = "Geometry cross-section ($(normal_axis) = $(round(slice_pos, digits=4)))"
+
+    fig = Figure(size = (700, 600))
+    ax = Axis(fig[1, 1],
+        title = isempty(title) ? auto_title : title,
+        xlabel = "$(xlabel) ($(label_units))",
+        ylabel = "$(ylabel) ($(label_units))",
+        aspect = DataAspect(),
+    )
+
+    hm = heatmap!(ax, xs, ys, eps_data, colormap = colormap)
+    Colorbar(fig[1, 2], hm, label = "ε (permittivity)")
+
+    return fig
+end
+
+"""
+    plot_geometry_cross_sections(geometry;
+        center=[0,0,0], span=[1,1,1], resolution=300,
+        colormap=:viridis, label_units="μm")
+
+Create a 3-panel figure with XY, XZ, and YZ cross-sections through `center`,
+evaluated directly from shape primitives.
+
+# Arguments
+- `geometry::Vector{Object}`: geometry list
+- `center::Vector`: `[x, y, z]` point through which all three slices pass
+- `span::Vector`: `[sx, sy, sz]` extent of each slice
+- `resolution::Int`: pixels per axis
+- `colormap`: CairoMakie colormap
+- `label_units::String`: unit label for axes
+"""
+function plot_geometry_cross_sections(
+    geometry::Vector{Object};
+    center::Vector{<:Real} = [0.0, 0.0, 0.0],
+    span::Vector{<:Real} = [1.0, 1.0, 1.0],
+    resolution::Int = 300,
+    colormap = :viridis,
+    label_units::String = "μm",
+)
+    cx, cy, cz = center
+    sx, sy, sz = span
+
+    # XY slice (z = cz)
+    eps_xy, xs_xy, ys_xy = sample_geometry_slice(
+        geometry, :z, cz;
+        x_range = (cx - sx / 2, cx + sx / 2),
+        y_range = (cy - sy / 2, cy + sy / 2),
+        resolution = resolution,
+    )
+    # XZ slice (y = cy)
+    eps_xz, xs_xz, zs_xz = sample_geometry_slice(
+        geometry, :y, cy;
+        x_range = (cx - sx / 2, cx + sx / 2),
+        y_range = (cz - sz / 2, cz + sz / 2),
+        resolution = resolution,
+    )
+    # YZ slice (x = cx)
+    eps_yz, ys_yz, zs_yz = sample_geometry_slice(
+        geometry, :x, cx;
+        x_range = (cy - sy / 2, cy + sy / 2),
+        y_range = (cz - sz / 2, cz + sz / 2),
+        resolution = resolution,
+    )
+
+    # Shared color range
+    all_min = min(minimum(eps_xy), minimum(eps_xz), minimum(eps_yz))
+    all_max = max(maximum(eps_xy), maximum(eps_xz), maximum(eps_yz))
+
+    fig = Figure(size = (1500, 500))
+
+    ax1 = Axis(fig[1, 1],
+        title = "XY (z = $(round(cz, digits=3)))",
+        xlabel = "x ($(label_units))", ylabel = "y ($(label_units))",
+        aspect = DataAspect(),
+    )
+    heatmap!(ax1, xs_xy, ys_xy, eps_xy,
+        colormap = colormap, colorrange = (all_min, all_max))
+
+    ax2 = Axis(fig[1, 2],
+        title = "XZ (y = $(round(cy, digits=3)))",
+        xlabel = "x ($(label_units))", ylabel = "z ($(label_units))",
+        aspect = DataAspect(),
+    )
+    heatmap!(ax2, xs_xz, zs_xz, eps_xz,
+        colormap = colormap, colorrange = (all_min, all_max))
+
+    ax3 = Axis(fig[1, 3],
+        title = "YZ (x = $(round(cx, digits=3)))",
+        xlabel = "y ($(label_units))", ylabel = "z ($(label_units))",
+        aspect = DataAspect(),
+    )
+    hm = heatmap!(ax3, ys_yz, zs_yz, eps_yz,
+        colormap = colormap, colorrange = (all_min, all_max))
+
+    Colorbar(fig[1, 4], hm, label = "ε (permittivity)")
+
+    return fig
 end

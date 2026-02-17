@@ -610,6 +610,7 @@ using GeometryPrimitives
             spec, fields, geom, bnd,
             Khronos.SourceData{Array{ComplexF64}}[],
             Khronos.MonitorData[],
+            nothing,  # polarization_data
             Khronos.HaloConnection[], Khronos.HaloConnection[],
             AbstractArray[], AbstractArray[],
             AbstractArray[], AbstractArray[],

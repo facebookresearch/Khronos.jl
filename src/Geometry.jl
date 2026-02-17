@@ -636,3 +636,312 @@ function transform_material(
     return transformation_matrix * material * transformation_matrix' /
            det(transformation_matrix)
 end
+
+# ---------------------------------------------------------- #
+# Dispersive material polarization initialization
+# ---------------------------------------------------------- #
+
+"""
+    _collect_unique_poles(geometry) -> Vector{LorentzianSusceptibility}
+
+Collect all unique susceptibility poles from the geometry. Two poles are
+considered the same if they have identical (omega_0, gamma) parameters
+(the sigma field varies per object/voxel).
+"""
+function _collect_unique_poles(geometry)
+    poles = LorentzianSusceptibility[]
+    seen = Set{Tuple{Float64,Float64}}()
+    for obj in geometry
+        has_susceptibilities(obj.material) || continue
+        for s in obj.material.susceptibilities
+            key = (s.omega_0, s.gamma)
+            if key ∉ seen
+                push!(seen, key)
+                push!(poles, s)
+            end
+        end
+    end
+    return poles
+end
+
+"""
+    _rasterize_pole_sigma!(sigma_arr, geometry, pole, xs, ys, zs)
+
+Paint the per-voxel sigma (oscillator strength) for a single susceptibility pole
+into the 3D array. Objects are painted in reverse order (last = lowest priority).
+"""
+function _rasterize_pole_sigma!(
+    sigma_arr::Array{T,3},
+    geometry::Vector{Object},
+    pole::LorentzianSusceptibility,
+    xs::Vector{Float64},
+    ys::Vector{Float64},
+    zs::Vector{Float64},
+) where {T}
+    fill!(sigma_arr, zero(T))
+    pole_key = (pole.omega_0, pole.gamma)
+
+    for gi in length(geometry):-1:1
+        obj = geometry[gi]
+        has_susceptibilities(obj.material) || continue
+
+        # Find matching pole in this object's susceptibilities
+        sigma_val = zero(T)
+        found = false
+        for s in obj.material.susceptibilities
+            if (s.omega_0, s.gamma) == pole_key
+                sigma_val = T(s.sigma)
+                found = true
+                break
+            end
+        end
+        found || continue
+
+        shape = obj.shape
+        b = bounds(shape)
+        ix_lo = max(searchsortedfirst(xs, b[1][1]), 1)
+        ix_hi = min(searchsortedlast(xs, b[2][1]), length(xs))
+        iy_lo = max(searchsortedfirst(ys, b[1][2]), 1)
+        iy_hi = min(searchsortedlast(ys, b[2][2]), length(ys))
+        iz_lo = max(searchsortedfirst(zs, b[1][3]), 1)
+        iz_hi = min(searchsortedlast(zs, b[2][3]), length(zs))
+
+        for iz in iz_lo:iz_hi, iy in iy_lo:iy_hi, ix in ix_lo:ix_hi
+            point = SVector(xs[ix], ys[iy], zs[iz])
+            if point ∈ shape
+                @inbounds sigma_arr[ix, iy, iz] = sigma_val
+            end
+        end
+    end
+end
+
+"""
+    init_polarization!(sim::SimulationData)
+
+Initialize dispersive polarization data for all chunks. Creates per-pole
+sigma arrays by rasterizing the geometry, allocates P/P_prev field arrays,
+and computes ADE coefficients.
+
+Must be called after `create_all_chunks` / `create_local_chunks` and after
+`init_geometry`.
+"""
+function init_polarization!(sim::SimulationData)
+    isnothing(sim.chunk_data) && return
+    !any_material_has_susceptibilities(sim.geometry) && return
+
+    geometry = sim.geometry
+    poles = _collect_unique_poles(geometry)
+    isempty(poles) && return
+
+    @info("  Initializing $(length(poles)) dispersive polarization pole(s)...")
+
+    # Pre-compute coordinate arrays for center-positioned Yee component (Ex used as reference)
+    gv_ref = GridVolume(sim, Ex())
+    origin = get_component_origin(sim, Ex())
+    gv_origin = get_min_corner(gv_ref)
+
+    xs = [origin[1] + (ix + gv_origin[1] - 2) * sim.Δx for ix in 1:gv_ref.Nx]
+    ys = [origin[2] + (iy + gv_origin[2] - 2) * sim.Δy for iy in 1:gv_ref.Ny]
+    zs = if sim.ndims == 3
+        [origin[3] + (iz + gv_origin[3] - 2) * sim.Δz for iz in 1:gv_ref.Nz]
+    else
+        [0.0]
+    end
+
+    # Get the array dimensions (same as used in field allocation)
+    ref_dims = get_component_voxel_count(sim, Ex())
+    arr_nx, arr_ny = ref_dims[1], ref_dims[2]
+    arr_nz = sim.ndims == 3 ? ref_dims[3] : 1
+
+    # Truncate coordinate arrays to match array dimensions
+    xs = length(xs) > arr_nx ? xs[1:arr_nx] : xs
+    ys = length(ys) > arr_ny ? ys[1:arr_ny] : ys
+    zs = length(zs) > arr_nz ? zs[1:arr_nz] : zs
+
+    T = backend_number
+
+    # Rasterize sigma arrays for each pole on CPU
+    pole_sigma_cpu = Array{T,3}[]
+    for pole in poles
+        sigma = Array{T}(undef, length(xs), length(ys), length(zs))
+        _rasterize_pole_sigma!(sigma, geometry, pole, xs, ys, zs)
+        push!(pole_sigma_cpu, sigma)
+    end
+
+    # Zero out ADE sigma inside PML regions.
+    # Dispersive materials inside PML cause exponential instability because the
+    # PML stretched-coordinate damping conflicts with the ADE polarization dynamics.
+    # This is a well-known issue in FDTD: dispersive materials must not overlap PML.
+    if !isnothing(sim.boundaries)
+        half_cell = sim.cell_size ./ 2
+        cc = Float64.(sim.cell_center)
+        pml_zeroed = 0
+        for sigma in pole_sigma_cpu
+            for ix in eachindex(xs), iy in eachindex(ys), iz in eachindex(zs)
+                sigma[ix, iy, iz] == 0 && continue
+                in_pml = false
+                # Check x PML
+                if length(sim.boundaries) >= 1
+                    x_lo = cc[1] - half_cell[1]
+                    x_hi = cc[1] + half_cell[1]
+                    pml_left_x = sim.boundaries[1][1]
+                    pml_right_x = sim.boundaries[1][2]
+                    if (pml_left_x > 0 && xs[ix] < x_lo + pml_left_x) ||
+                       (pml_right_x > 0 && xs[ix] > x_hi - pml_right_x)
+                        in_pml = true
+                    end
+                end
+                # Check y PML
+                if !in_pml && length(sim.boundaries) >= 2
+                    y_lo = cc[2] - half_cell[2]
+                    y_hi = cc[2] + half_cell[2]
+                    pml_left_y = sim.boundaries[2][1]
+                    pml_right_y = sim.boundaries[2][2]
+                    if (pml_left_y > 0 && ys[iy] < y_lo + pml_left_y) ||
+                       (pml_right_y > 0 && ys[iy] > y_hi - pml_right_y)
+                        in_pml = true
+                    end
+                end
+                # Check z PML
+                if !in_pml && length(sim.boundaries) >= 3
+                    z_lo = cc[3] - half_cell[3]
+                    z_hi = cc[3] + half_cell[3]
+                    pml_left_z = sim.boundaries[3][1]
+                    pml_right_z = sim.boundaries[3][2]
+                    if (pml_left_z > 0 && zs[iz] < z_lo + pml_left_z) ||
+                       (pml_right_z > 0 && zs[iz] > z_hi - pml_right_z)
+                        in_pml = true
+                    end
+                end
+                if in_pml
+                    sigma[ix, iy, iz] = zero(T)
+                    pml_zeroed += 1
+                end
+            end
+        end
+        if pml_zeroed > 0
+            @warn("  Zeroed $pml_zeroed dispersive sigma values inside PML regions " *
+                  "(dispersive materials in PML cause instability)")
+        end
+    end
+
+    # Compute chi1 (semi-implicit ADE correction) per voxel.
+    # chi1 = Σ_poles γ₁⁻¹ * C_k * σ_k / 2, where C_k is the per-sigma driving
+    # coefficient. This stabilizes the coupled ADE+FDTD system by modifying
+    # ε_inv → ε_inv / (1 + ε_inv * chi1). Reference: meep step_generic.cpp.
+    chi1_cpu = zeros(T, length(xs), length(ys), length(zs))
+    for (pi, pole) in enumerate(poles)
+        coeffs = compute_ade_coefficients(pole, sim.Δt)
+        c = if coeffs.is_drude
+            T(coeffs.gamma1_inv * coeffs.drude_coeff / 2)
+        else
+            T(coeffs.gamma1_inv * coeffs.sigma_omega0_dt_sq / 2)
+        end
+        @info("  chi1 pole $pi: c=$c, sigma_max=$(maximum(pole_sigma_cpu[pi])), dt=$(sim.Δt), drude_coeff=$(coeffs.drude_coeff), gamma1_inv=$(coeffs.gamma1_inv)")
+        chi1_cpu .+= pole_sigma_cpu[pi] .* c
+    end
+
+    # For each chunk, create PolarizationData
+    for chunk in sim.chunk_data
+        !chunk.spec.physics.has_polarizability && continue
+
+        chunk_gv = chunk.spec.grid_volume
+        nr = chunk.ndrange
+
+        # Allocate fPDx/fPDy/fPDz on the chunk's fields if not already done
+        if isnothing(chunk.fields.fPDx)
+            field_dims = (nr[1] + 2, nr[2] + 2, nr[3] + 2)
+            chunk.fields = Fields{AbstractArray}(;
+                # Copy all existing fields
+                [(fn, getfield(chunk.fields, fn)) for fn in fieldnames(Fields)
+                 if fn ∉ (:fPDx, :fPDy, :fPDz)]...,
+                fPDx = KernelAbstractions.zeros(backend_engine, T, field_dims...),
+                fPDy = KernelAbstractions.zeros(backend_engine, T, field_dims...),
+                fPDz = KernelAbstractions.zeros(backend_engine, T, field_dims...),
+            )
+        end
+
+        # Create per-pole state
+        pole_states = PolarizationPoleState[]
+        for (pi, pole) in enumerate(poles)
+            coeffs = compute_ade_coefficients(pole, sim.Δt)
+
+            field_dims = (nr[1] + 2, nr[2] + 2, nr[3] + 2)
+
+            # Slice the global sigma array to this chunk's region
+            # chunk_gv.start_idx gives the offset in the global array
+            si = chunk_gv.start_idx
+            chunk_sigma_cpu = pole_sigma_cpu[pi][
+                si[1]:min(si[1]+nr[1]-1, size(pole_sigma_cpu[pi], 1)),
+                si[2]:min(si[2]+nr[2]-1, size(pole_sigma_cpu[pi], 2)),
+                si[3]:min(si[3]+nr[3]-1, size(pole_sigma_cpu[pi], 3)),
+            ]
+
+            # Transfer to GPU
+            sigma_gpu = backend_array(chunk_sigma_cpu)
+
+            push!(pole_states, PolarizationPoleState(
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Px
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Py
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Pz
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Px_prev
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Py_prev
+                KernelAbstractions.zeros(backend_engine, T, field_dims...),  # Pz_prev
+                sigma_gpu,  # sigma_x (using same sigma for all components; isotropic)
+                sigma_gpu,  # sigma_y
+                sigma_gpu,  # sigma_z
+                coeffs,
+            ))
+        end
+
+        chunk.polarization_data = PolarizationData(pole_states)
+
+        # Apply chi1 semi-implicit correction to ε_inv arrays.
+        # This modifies ε_inv → ε_inv / (1 + ε_inv * chi1) to stabilize
+        # the coupled ADE+FDTD system for dispersive materials.
+        chi1_si = chunk_gv.start_idx
+        chunk_chi1 = chi1_cpu[
+            chi1_si[1]:min(chi1_si[1]+nr[1]-1, size(chi1_cpu, 1)),
+            chi1_si[2]:min(chi1_si[2]+nr[2]-1, size(chi1_cpu, 2)),
+            chi1_si[3]:min(chi1_si[3]+nr[3]-1, size(chi1_cpu, 3)),
+        ]
+        if maximum(abs, chunk_chi1) > 0
+            g = chunk.geometry_data
+            @info("  chi1 max: $(maximum(chunk_chi1)), nonzero: $(count(x->x!=0, chunk_chi1))")
+            # Download ε_inv from GPU (or create from scalar)
+            if isnothing(g.ε_inv_x)
+                # Scalar ε_inv — expand to per-voxel arrays
+                eps_val = isnothing(g.ε_inv) ? one(T) : T(g.ε_inv)
+                eps_x = fill(eps_val, nr...)
+                eps_y = fill(eps_val, nr...)
+                eps_z = fill(eps_val, nr...)
+                @info("  ε_inv: scalar $(eps_val)")
+            else
+                eps_x = Array(g.ε_inv_x)
+                eps_y = Array(g.ε_inv_y)
+                eps_z = Array(g.ε_inv_z)
+                @info("  ε_inv_x before chi1: min=$(minimum(eps_x)) max=$(maximum(eps_x))")
+            end
+
+            # Apply: ε_inv_eff = ε_inv / (1 + ε_inv * chi1)
+            for idx in eachindex(chunk_chi1)
+                c1 = chunk_chi1[idx]
+                c1 == 0 && continue
+                eps_x[idx] /= (1 + eps_x[idx] * c1)
+                eps_y[idx] /= (1 + eps_y[idx] * c1)
+                eps_z[idx] /= (1 + eps_z[idx] * c1)
+            end
+
+            # Re-upload and replace geometry_data (use existing array type parameter)
+            AT = typeof(g).parameters[2]  # array type from GeometryData{T,A}
+            chunk.geometry_data = GeometryData{T,AT}(;
+                [(fn, getfield(g, fn)) for fn in fieldnames(GeometryData)
+                 if fn ∉ (:ε_inv, :ε_inv_x, :ε_inv_y, :ε_inv_z)]...,
+                ε_inv = nothing,  # now per-voxel
+                ε_inv_x = backend_array(eps_x),
+                ε_inv_y = backend_array(eps_y),
+                ε_inv_z = backend_array(eps_z),
+            )
+        end
+    end
+end

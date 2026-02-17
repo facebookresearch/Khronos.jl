@@ -26,6 +26,7 @@ verbose_logger = ConsoleLogger(stderr, -10)
 
 include("load_deps.jl")
 
+include("Susceptibility.jl")
 include("DataStructures.jl")
 include("utils.jl")
 include("Geometry.jl")
@@ -38,7 +39,9 @@ include("Fields.jl")
 include("Monitors.jl")
 include("Memory.jl")
 include("Timestep.jl")
+include("Near2Far.jl")
 include("Simulation.jl")
+include("Batch.jl")
 include("Visualization.jl")
 
 export Simulation

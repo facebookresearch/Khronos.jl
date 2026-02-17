@@ -235,3 +235,45 @@ end
 end
 
 get_dft_fields(monitor::DFTMonitor) = monitor.monitor_data.fields
+
+# ------------------------------------------------------------ #
+# Near2Far Monitor
+# ------------------------------------------------------------ #
+
+function init_monitors(sim::SimulationData, monitor::Near2FarMonitor)
+    md = init_near2far_monitor(sim, monitor)
+
+    # Initialize the internal DFT monitors and push their data into sim
+    for dft_mon in md.tangential_E_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+    for dft_mon in md.tangential_H_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+
+    # Compute physical base positions (position of dft[1,1,1]) for each component.
+    # These are the exact Yee grid positions where the DFT fields are sampled.
+    Δ = SVector(sim.Δx, sim.Δy, sim.Δz)
+    for (i, dft_mon) in enumerate(md.tangential_E_monitors)
+        origin = get_component_origin(sim, dft_mon.monitor_data.component)
+        gv = dft_mon.monitor_data.gv
+        base = origin .+ (SVector{3,Float64}(gv.start_idx...) .- 1) .* Δ
+        if i == 1
+            md.e1_base = collect(base)
+        else
+            md.e2_base = collect(base)
+        end
+    end
+    for (i, dft_mon) in enumerate(md.tangential_H_monitors)
+        origin = get_component_origin(sim, dft_mon.monitor_data.component)
+        gv = dft_mon.monitor_data.gv
+        base = origin .+ (SVector{3,Float64}(gv.start_idx...) .- 1) .* Δ
+        if i == 1
+            md.h1_base = collect(base)
+        else
+            md.h2_base = collect(base)
+        end
+    end
+
+    return md
+end

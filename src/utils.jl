@@ -135,8 +135,8 @@ get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = SVector(0.0, 0.0, -sim.
 
 """get_component_origin()
 
-The origin of a component array is defined as the coordinate in the lowest
-corner of the cell (-Lx/2-Cx,-Ly/2-Cx,-Lz/2-Cx).
+The origin of a component array is defined as the coordinate of the first
+(lowest-index) grid point: cell_center - cell_size/2 + Δ/2.
 
 By definition, let's set the extent of the cell size to match the edges
 of the edge voxels themselves. This way the resolution specifies how many
@@ -145,9 +145,9 @@ voxels are in the domain.
 
 function get_component_origin(sim::SimulationData)
     return SVector(
-        -sim.cell_size[1] / 2 - sim.cell_center[1] + sim.Δx / 2,
-        -sim.cell_size[2] / 2 - sim.cell_center[2] + sim.Δy / 2,
-        -sim.cell_size[3] / 2 - sim.cell_center[3] + sim.Δz / 2,
+        sim.cell_center[1] - sim.cell_size[1] / 2 + sim.Δx / 2,
+        sim.cell_center[2] - sim.cell_size[2] / 2 + sim.Δy / 2,
+        sim.cell_center[3] - sim.cell_size[3] / 2 + sim.Δz / 2,
     )
 end
 

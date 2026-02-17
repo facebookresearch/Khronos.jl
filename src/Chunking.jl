@@ -157,6 +157,7 @@ function classify_region_physics(
     has_mu = false
     has_sigma_D = false
     has_sigma_B = false
+    has_polarizability = false
 
     # Check geometry objects for material properties
     if !isnothing(geometry)
@@ -176,6 +177,9 @@ function classify_region_physics(
             end
             if !isnothing(mat.σB) || !isnothing(mat.σBx) || !isnothing(mat.σBy) || !isnothing(mat.σBz)
                 has_sigma_B = true
+            end
+            if has_susceptibilities(mat)
+                has_polarizability = true
             end
             # Early exit: all material flags found, no need to check more objects
             (has_epsilon & has_mu & has_sigma_D & has_sigma_B) && break
@@ -220,6 +224,7 @@ function classify_region_physics(
         has_pml_z = has_pml_z,
         has_sources = has_sources,
         has_monitors = has_monitors,
+        has_polarizability = has_polarizability,
     )
 end
 
@@ -1289,11 +1294,19 @@ function create_all_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,B
 
     if single_chunk
         spec = sim.chunk_plan.chunks[1]
-        ndrange = (spec.grid_volume.Nx, spec.grid_volume.Ny, max(1, spec.grid_volume.Nz))
+        # Use sim.Nx/Ny/Nz directly for ndrange rather than GridVolume's
+        # Nx/Ny/Nz. The GridVolume is constructed from floating-point
+        # coordinate-to-index conversions (ceil/floor) that can be off by 1
+        # due to rounding (e.g., ceil(3.7 / (3.7/222)) = 223 instead of 222).
+        # sim.Nx/Ny/Nz are the canonical grid dimensions used for array
+        # allocation and represent the minimum safe iteration range across
+        # all Yee-staggered components.
+        ndrange = (sim.Nx, sim.Ny, max(1, sim.Nz))
         chunk = ChunkData{N,T,CT,BT}(
             spec, sim.fields, sim.geometry_data, sim.boundary_data,
             isnothing(sim.source_data) ? SourceData{CT}[] : sim.source_data,
             sim.monitor_data,
+            nothing,  # polarization_data
             HaloConnection[], HaloConnection[],
             AbstractArray[], AbstractArray[],
             AbstractArray[], AbstractArray[],
@@ -1325,6 +1338,7 @@ function create_all_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT,B
 
         chunk = ChunkData{N,T,CT,BT}(
             spec, fields, geom, bnd, src, mon,
+            nothing,  # polarization_data
             HaloConnection[], HaloConnection[],
             AbstractArray[], AbstractArray[],
             AbstractArray[], AbstractArray[],
@@ -1385,6 +1399,7 @@ function create_local_chunks(sim::SimulationData{N,T,CN,CT,BT}) where {N,T,CN,CT
 
         chunk = ChunkData{N,T,CT,BT}(
             spec, fields, geom, bnd, src, mon,
+            nothing,  # polarization_data
             HaloConnection[], HaloConnection[],
             AbstractArray[], AbstractArray[],
             AbstractArray[], AbstractArray[],
