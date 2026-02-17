@@ -13,5 +13,8 @@ using Test
     include("test_visualization.jl")
     include("test_volumes.jl")
     include("test_chunking.jl")
+    include("test_dispersive.jl")
+    include("test_near2far.jl")
+    include("test_batch.jl")
 
 end
