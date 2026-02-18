@@ -382,6 +382,66 @@ Two modes:
 end
 
 # -------------------------------------------------------- #
+# ModeMonitor.jl
+# -------------------------------------------------------- #
+
+"""
+    ModeSpec
+
+Configuration for the mode solver used by ModeMonitor.
+"""
+@with_kw struct ModeSpec
+    num_modes::Int = 1
+    target_neff::Float64 = 0.0
+    geometry::Vector{Object} = Object[]
+    mode_solver_resolution::Int = 50
+    solver_tolerance::Float64 = 1e-6
+end
+
+"""
+    ModeMonitorData
+
+Internal data structure for mode overlap computation. Stores references
+to 4 tangential DFT monitors (2 E + 2 H), solved mode profiles, and
+grid information needed for the overlap integral.
+"""
+@with_kw mutable struct ModeMonitorData <: MonitorData
+    normal_axis::Int                              # 1=x, 2=y, 3=z
+    tangential_E_monitors::Vector{DFTMonitor}     # 2 tangential E-field DFT monitors
+    tangential_H_monitors::Vector{DFTMonitor}     # 2 tangential H-field DFT monitors
+    frequencies::Vector{Float64}
+    mode_profiles::Vector{VectorModesolver.Mode}  # solved modes (1 per freq)
+    geometry::Vector{Object}                      # for mode solving
+    mode_spec::ModeSpec
+    dx::Float64 = 0.0
+    dy::Float64 = 0.0
+    dz::Float64 = 0.0
+    # Physical position of each component's first DFT grid point [x,y,z].
+    e1_base::Vector{Float64} = Float64[]
+    e2_base::Vector{Float64} = Float64[]
+    h1_base::Vector{Float64} = Float64[]
+    h2_base::Vector{Float64} = Float64[]
+end
+
+"""
+    ModeMonitor
+
+Monitor that records tangential E/H fields on a cross-sectional plane and
+computes the overlap integral with a waveguide mode to extract complex
+mode amplitudes (forward/backward S-parameters).
+
+One dimension of `size` must be zero (planar cross-section).
+"""
+@with_kw mutable struct ModeMonitor <: Monitor
+    center::Vector{<:Number}
+    size::Vector{<:Number}          # one dimension must be 0
+    frequencies::Vector{<:Number}
+    mode_spec::ModeSpec = ModeSpec()
+    decimation::Int64 = 1
+    monitor_data::Union{Nothing, ModeMonitorData} = nothing
+end
+
+# -------------------------------------------------------- #
 # Chunking.jl
 # -------------------------------------------------------- #
 
@@ -517,6 +577,7 @@ end
     resolution::Any
     sources::Any
     boundaries::Union{Vector{Vector{N}},Nothing} = nothing
+    absorbers::Union{Vector,Nothing} = nothing  # per-axis absorber config: [nothing, [nothing, Absorber(...)], nothing]
     geometry::Union{Vector{Object},Nothing} = nothing
     monitors::Union{Vector{Monitor},Nothing} = nothing
     num_chunks::Union{Int,Symbol,Nothing} = nothing  # nothing=single chunk, :auto, or explicit Int

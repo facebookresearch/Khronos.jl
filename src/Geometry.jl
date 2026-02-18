@@ -446,6 +446,43 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
     σBy = _alloc(needs_conductivities(geometry, By()), Hy())
     σBz = _alloc(needs_conductivities(geometry, Bz()), Hz())
 
+    # If absorbers are specified, ensure σD and σB arrays exist (absorbers
+    # add conductivity additively to the geometry arrays).
+    if !isnothing(sim.absorbers)
+        for (axis, axis_absorbers) in enumerate(sim.absorbers)
+            isnothing(axis_absorbers) && continue
+            for side_abs in axis_absorbers
+                isnothing(side_abs) && continue
+                # Force allocation of all conductivity arrays
+                if isnothing(σDx)
+                    σDx = _alloc(true, Ex())
+                    if !isnothing(σDx); fill!(σDx, zero(T)); end
+                end
+                if isnothing(σDy)
+                    σDy = _alloc(true, Ey())
+                    if !isnothing(σDy); fill!(σDy, zero(T)); end
+                end
+                if isnothing(σDz)
+                    σDz = _alloc(true, Ez())
+                    if !isnothing(σDz); fill!(σDz, zero(T)); end
+                end
+                if isnothing(σBx)
+                    σBx = _alloc(true, Hx())
+                    if !isnothing(σBx); fill!(σBx, zero(T)); end
+                end
+                if isnothing(σBy)
+                    σBy = _alloc(true, Hy())
+                    if !isnothing(σBy); fill!(σBy, zero(T)); end
+                end
+                if isnothing(σBz)
+                    σBz = _alloc(true, Hz())
+                    if !isnothing(σBz); fill!(σBz, zero(T)); end
+                end
+                break  # only need to allocate once
+            end
+        end
+    end
+
     # Pre-compute 1D coordinate arrays for each component to avoid
     # per-voxel allocations. Each coordinate is separable:
     #   coord[i] = origin[d] + (i + gv_origin[d] - 2) * Δ[d]
@@ -532,6 +569,11 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         wait(t)
     end
 
+    # Apply absorber conductivity profiles to σD/σB arrays
+    if !isnothing(sim.absorbers)
+        _apply_absorbers!(sim, σDx, σDy, σDz, σBx, σBy, σBz)
+    end
+
     # Construct geometry data structure. Importantly, this will transfer all
     # data from the host to the device.
     sim.geometry_data = GeometryData{backend_number,backend_array}(
@@ -575,6 +617,103 @@ get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Y) =
     sim.geometry_data.σDy
 get_mat_conductivity_from_field(sim::SimulationData, ::Electric, ::Z) =
     sim.geometry_data.σDz
+
+# ---------------------------------------------------------- #
+# Absorber conductivity application
+# ---------------------------------------------------------- #
+
+"""
+    _apply_absorbers!(sim, σDx, σDy, σDz, σBx, σBy, σBz)
+
+Apply adiabatic absorber conductivity profiles to the per-voxel σD/σB arrays.
+The absorber conductivity is additive (stacks with any material conductivity).
+
+σ(d) = σ_max * (d / L)^p
+
+where d = distance from domain interior into absorber, L = absorber thickness,
+p = polynomial order.
+
+For impedance matching: σ_B = σ_D * μ₀/ε₀ = σ_D (in natural units where μ₀=ε₀=1).
+"""
+function _apply_absorbers!(sim::SimulationData, σDx, σDy, σDz, σBx, σBy, σBz)
+    T = backend_number
+    absorbers = sim.absorbers
+    isnothing(absorbers) && return
+
+    for (axis, axis_absorbers) in enumerate(absorbers)
+        isnothing(axis_absorbers) && continue
+
+        for (side_idx, abs_spec) in enumerate(axis_absorbers)
+            isnothing(abs_spec) && continue
+
+            num_layers = abs_spec.num_layers
+            p = abs_spec.sigma_order
+
+            # Auto-compute σ_max if not specified
+            # Target reflection R ≈ exp(-2 * σ_max * L / (p+1)) ≈ 1e-6
+            # => σ_max = -(p+1) * log(1e-6) / (2 * L)
+            Δ = axis == 1 ? sim.Δx : (axis == 2 ? sim.Δy : sim.Δz)
+            L = num_layers * Δ
+            σ_max = if abs_spec.sigma_max > 0
+                abs_spec.sigma_max
+            else
+                T(-(p + 1) * log(1e-6) / (2.0 * L) * 0.5 * sim.Δt)
+            end
+
+            # side_idx == 1 is left (-), side_idx == 2 is right (+)
+            is_right = (side_idx == 2)
+
+            # Apply conductivity to all σD/σB arrays
+            # The absorber occupies the outermost num_layers cells on this side
+            _all_σ_pairs = [
+                (σDx, :x), (σDy, :y), (σDz, :z),
+                (σBx, :x), (σBy, :y), (σBz, :z),
+            ]
+
+            for (σ_arr, comp_label) in _all_σ_pairs
+                isnothing(σ_arr) && continue
+
+                N_axis = size(σ_arr, axis)
+
+                for layer in 1:min(num_layers, N_axis)
+                    # layer counts from the boundary inward:
+                    #   layer 1 = outermost cell (at boundary) → max σ
+                    #   layer num_layers = innermost cell (at interior edge) → min σ
+                    # d_normalized = distance from interior edge into absorber
+                    d_normalized = (num_layers - layer + 1) / num_layers
+
+                    σ_val = T(σ_max * d_normalized^p)
+
+                    if is_right
+                        # Right side: layer 1 at N_axis (boundary), layer num_layers at N_axis - num_layers + 1 (interior)
+                        idx = N_axis - layer + 1
+                    else
+                        # Left side: layer 1 at index 1 (boundary), layer num_layers at num_layers (interior)
+                        idx = layer
+                    end
+
+                    # Apply to all voxels in the plane perpendicular to axis
+                    if axis == 1
+                        for iz in 1:size(σ_arr, 3), iy in 1:size(σ_arr, 2)
+                            @inbounds σ_arr[idx, iy, iz] += σ_val
+                        end
+                    elseif axis == 2
+                        for iz in 1:size(σ_arr, 3), ix in 1:size(σ_arr, 1)
+                            @inbounds σ_arr[ix, idx, iz] += σ_val
+                        end
+                    else  # axis == 3
+                        for iy in 1:size(σ_arr, 2), ix in 1:size(σ_arr, 1)
+                            @inbounds σ_arr[ix, iy, idx] += σ_val
+                        end
+                    end
+                end
+            end
+
+            @info("  Applied absorber on axis=$axis, side=$(is_right ? "+" : "-"), " *
+                  "layers=$num_layers, σ_max=$(round(σ_max, sigdigits=4)), order=$p")
+        end
+    end
+end
 
 # ---------------------------------------------------------- #
 # Material functions

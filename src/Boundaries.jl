@@ -2,6 +2,24 @@
 
 abstract type Boundary end
 
+"""
+    Absorber
+
+Adiabatic absorber boundary condition. Uses graded electric and magnetic
+conductivity that ramps up polynomially from zero to σ_max near the
+simulation boundary. More stable than PML when non-translationally-invariant
+structures (e.g., ring resonators) intersect the boundary.
+
+σ(d) = σ_max * (d / L)^sigma_order
+
+where d = distance into absorber, L = absorber thickness.
+"""
+@with_kw struct Absorber <: Boundary
+    num_layers::Int = 40          # number of grid cells in absorber region
+    sigma_order::Int = 3          # polynomial order for conductivity ramp
+    sigma_max::Float64 = 0.0     # maximum conductivity (0 = auto-compute)
+end
+
 function sigma_helper(idx, N, Δx, Δt, length_left, length_right)
     u0(pml_length) = -log(1e-15) / (4 * pml_length * 1 / 3) * (0.5 * Δt)
     u(x) = x^2 * 0.5 * (sign(x) + 1)

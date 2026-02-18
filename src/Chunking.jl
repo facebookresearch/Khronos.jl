@@ -214,6 +214,35 @@ function classify_region_physics(
         end
     end
 
+    # Check if absorbers contribute sigma_D / sigma_B in this region
+    if !isnothing(sim.absorbers)
+        half_cell = Float64.(sim.cell_size) ./ 2
+        cc = Float64.(sim.cell_center)
+        vol_min = get_min_corner(vol)
+        vol_max = get_max_corner(vol)
+        for (axis, axis_absorbers) in enumerate(sim.absorbers)
+            isnothing(axis_absorbers) && continue
+            for (side_idx, abs_spec) in enumerate(axis_absorbers)
+                isnothing(abs_spec) && continue
+                Δ = axis == 1 ? sim.Δx : (axis == 2 ? sim.Δy : sim.Δz)
+                L = abs_spec.num_layers * Δ
+                if side_idx == 1  # left side
+                    edge = cc[axis] - half_cell[axis]
+                    if vol_min[axis] < edge + L
+                        has_sigma_D = true
+                        has_sigma_B = true
+                    end
+                else  # right side
+                    edge = cc[axis] + half_cell[axis]
+                    if vol_max[axis] > edge - L
+                        has_sigma_D = true
+                        has_sigma_B = true
+                    end
+                end
+            end
+        end
+    end
+
     return PhysicsFlags(
         has_epsilon = has_epsilon,
         has_mu = has_mu,

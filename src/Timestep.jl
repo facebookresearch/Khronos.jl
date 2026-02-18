@@ -1323,6 +1323,10 @@ function update_H_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
         # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
         hasfield(typeof(m), :component) || continue
+        # Decimation: skip DFT updates on non-decimation steps
+        if m.decimation > 1 && sim.timestep % m.decimation != 0
+            continue
+        end
         if is_magnetic(m.component)
             update_monitor(sim, m, time)
         end
@@ -1336,6 +1340,10 @@ function update_E_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
         # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
         hasfield(typeof(m), :component) || continue
+        # Decimation: skip DFT updates on non-decimation steps
+        if m.decimation > 1 && sim.timestep % m.decimation != 0
+            continue
+        end
         if is_electric(m.component)
             update_monitor(sim, m, time)
         end

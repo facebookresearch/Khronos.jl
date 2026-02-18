@@ -16,5 +16,7 @@ using Test
     include("test_dispersive.jl")
     include("test_near2far.jl")
     include("test_batch.jl")
+    include("test_mode_monitor.jl")
+    include("test_absorber.jl")
 
 end

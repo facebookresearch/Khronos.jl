@@ -7,6 +7,69 @@ Time domain monitors etc.
 """
 
 # ------------------------------------------------------------ #
+# Auto-decimation
+# ------------------------------------------------------------ #
+
+"""
+    auto_decimate!(sim::SimulationData)
+
+Automatically set the `decimation` factor on all DFT-based monitors
+(DFTMonitor, ModeMonitor, Near2FarMonitor) that still have `decimation == 1`.
+
+The optimal decimation factor is computed from the Nyquist criterion:
+the field content has maximum frequency `f_max` determined by the source
+bandwidth, so the DFT can safely be updated every `D` steps where
+
+    D = floor(1 / (2 · f_max · Δt))
+
+This can dramatically reduce the number of DFT kernel launches per
+timestep without affecting accuracy.
+"""
+function auto_decimate!(sim::SimulationData)
+    Δt = sim.Δt
+
+    # Determine f_max from all sources
+    f_max = 0.0
+    for src in sim.sources
+        tp = get_time_profile(src)
+        if tp isa GaussianPulseData
+            # Gaussian bandwidth: frequency content extends to fcen + fwidth/2
+            f_max = max(f_max, Float64(tp.fcen) + Float64(tp.fwidth) / 2)
+        elseif tp isa ContinuousWaveData
+            f_max = max(f_max, Float64(tp.fcen))
+        else
+            # Unknown source type — be conservative
+            f_max = max(f_max, 1.0 / (2.0 * Float64(Δt)))
+        end
+    end
+
+    if f_max ≤ 0
+        return  # no sources, nothing to do
+    end
+
+    # Maximum safe decimation from Nyquist: sampling rate 1/(D·Δt) > 2·f_max
+    D_max = max(1, floor(Int, 1.0 / (2.0 * f_max * Float64(Δt))))
+
+    if D_max ≤ 1
+        return  # no benefit from decimation
+    end
+
+    n_updated = 0
+    isnothing(sim.monitors) && return
+    for m in sim.monitors
+        isnothing(m) && continue
+        if hasfield(typeof(m), :decimation) && m.decimation == 1
+            m.decimation = D_max
+            n_updated += 1
+        end
+    end
+
+    if n_updated > 0 && (!is_distributed() || is_root())
+        @info "  Auto-decimation: D=$D_max (f_max=$(round(f_max, sigdigits=4)), Δt=$(round(Float64(Δt), sigdigits=4))) applied to $n_updated monitor(s)"
+    end
+end
+
+# ------------------------------------------------------------ #
 # Interface functions
 # ------------------------------------------------------------ #
 
@@ -253,6 +316,47 @@ function init_monitors(sim::SimulationData, monitor::Near2FarMonitor)
 
     # Compute physical base positions (position of dft[1,1,1]) for each component.
     # These are the exact Yee grid positions where the DFT fields are sampled.
+    Δ = SVector(sim.Δx, sim.Δy, sim.Δz)
+    for (i, dft_mon) in enumerate(md.tangential_E_monitors)
+        origin = get_component_origin(sim, dft_mon.monitor_data.component)
+        gv = dft_mon.monitor_data.gv
+        base = origin .+ (SVector{3,Float64}(gv.start_idx...) .- 1) .* Δ
+        if i == 1
+            md.e1_base = collect(base)
+        else
+            md.e2_base = collect(base)
+        end
+    end
+    for (i, dft_mon) in enumerate(md.tangential_H_monitors)
+        origin = get_component_origin(sim, dft_mon.monitor_data.component)
+        gv = dft_mon.monitor_data.gv
+        base = origin .+ (SVector{3,Float64}(gv.start_idx...) .- 1) .* Δ
+        if i == 1
+            md.h1_base = collect(base)
+        else
+            md.h2_base = collect(base)
+        end
+    end
+
+    return md
+end
+
+# ------------------------------------------------------------ #
+# Mode Monitor
+# ------------------------------------------------------------ #
+
+function init_monitors(sim::SimulationData, monitor::ModeMonitor)
+    md = init_mode_monitor(sim, monitor)
+
+    # Initialize the internal DFT monitors and push their data into sim
+    for dft_mon in md.tangential_E_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+    for dft_mon in md.tangential_H_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+
+    # Compute physical base positions (position of dft[1,1,1]) for each component.
     Δ = SVector(sim.Δx, sim.Δy, sim.Δz)
     for (i, dft_mon) in enumerate(md.tangential_E_monitors)
         origin = get_component_origin(sim, dft_mon.monitor_data.component)

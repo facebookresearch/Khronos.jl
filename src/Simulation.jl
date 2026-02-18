@@ -132,6 +132,9 @@ function prepare_simulation!(sim::SimulationData)
         @info("  init_fields:     $(round(t4-t3b, digits=3))s")
     end
 
+    # Auto-decimate monitors based on source bandwidth (Nyquist criterion)
+    auto_decimate!(sim)
+
     # prepare time and dft monitors
     init_monitors(sim, sim.monitors)
     t5 = time()
