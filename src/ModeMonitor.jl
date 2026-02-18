@@ -136,7 +136,7 @@ where P_mode = (1/2) Re ∫∫ (E_mode × H_mode*) · n̂ dA.
 
 Returns vectors of complex amplitudes indexed by frequency.
 """
-function compute_mode_amplitudes(md::ModeMonitorData)
+function compute_mode_amplitudes(md::ModeMonitorData; verbose::Bool = false)
     n_freq = length(md.frequencies)
     a_plus = zeros(ComplexF64, n_freq)
     a_minus = zeros(ComplexF64, n_freq)
@@ -189,6 +189,18 @@ function compute_mode_amplitudes(md::ModeMonitorData)
     d1, d2 = if normal_axis == 3; (md.dx, md.dy)
     elseif normal_axis == 1; (md.dy, md.dz)
     else; (md.dx, md.dz)
+    end
+
+    if verbose
+        println("  [compute_mode_amplitudes] verbose diagnostics:")
+        println("    normal_axis = $normal_axis")
+        println("    n1 = $n1, n2 = $n2, dA = $dA")
+        println("    d1 = $d1, d2 = $d2")
+        println("    DFT field shapes: e1=$(size(e1_fields)), e2=$(size(e2_fields)), h1=$(size(h1_fields)), h2=$(size(h2_fields))")
+        println("    e1_base = $(md.e1_base), h2_base = $(md.h2_base)")
+        # Check max field values
+        println("    max|e1_fields| = $(maximum(abs.(e1_fields)))")
+        println("    max|h2_fields| = $(maximum(abs.(h2_fields)))")
     end
 
     for i_freq in 1:n_freq
@@ -269,6 +281,15 @@ function compute_mode_amplitudes(md::ModeMonitorData)
         if abs(P_mode) > 1e-30
             a_plus[i_freq] = overlap_plus / (4.0 * P_mode)
             a_minus[i_freq] = overlap_minus / (4.0 * P_mode)
+        end
+
+        if verbose && (i_freq == 1 || i_freq == (n_freq + 1) ÷ 2 || i_freq == n_freq)
+            println("    freq[$i_freq] = $(md.frequencies[i_freq]):")
+            println("      P_mode = $P_mode")
+            println("      |overlap_plus| = $(abs(overlap_plus))")
+            println("      |a+| = $(abs(a_plus[i_freq]))")
+            println("      mode_e1 max = $(maximum(abs.(mode_e1)))")
+            println("      mode_h2 max = $(maximum(abs.(mode_h2)))")
         end
     end
 

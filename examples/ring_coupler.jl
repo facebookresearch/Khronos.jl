@@ -36,8 +36,12 @@ wg_height = 0.22  # μm
 ring_radius = 5.0  # μm (center radius)
 coupling_gap = 0.05  # μm
 
-# Ring center position: waveguide at y=0, ring above with coupling gap
-ring_center_y = wg_width / 2 + coupling_gap + ring_radius
+# Ring center position: waveguide centered at y=0 spans ±wg_width/2,
+# so its top edge is at y = wg_width/2. The gap is measured from this edge
+# to the outer edge of the ring (at ring_center_y - ring_radius - wg_width/2).
+# Solving: ring_center_y - (ring_radius + wg_width/2) = wg_width/2 + coupling_gap
+# => ring_center_y = wg_width + coupling_gap + ring_radius
+ring_center_y = wg_width + coupling_gap + ring_radius
 
 # Wavelength range
 λ_min = 1.5   # μm
@@ -46,27 +50,35 @@ ring_center_y = wg_width / 2 + coupling_gap + ring_radius
 freq_center = 1.0 / λ_center
 freq_min = 1.0 / λ_max
 freq_max = 1.0 / λ_min
-fwidth = freq_max - freq_min
+fwidth = 2π * 0.5 * (freq_max - freq_min)  # Khronos uses fwidth = 1/temporal_width;
+                                           # spectral 1/e half-width = fwidth/(2π).
+                                           # To cover ±(freq_max-freq_min)/2 to 1/e,
+                                           # we need fwidth = 2π × half-bandwidth.
 
 # Number of frequency points for monitors
-n_freqs = 51
+n_freqs = 101
 monitor_freqs = collect(range(freq_min, freq_max, length=n_freqs))
 
 # ------------------------------------------------------------------- #
 # Simulation domain
 # ------------------------------------------------------------------- #
 
-# Domain spans the coupling region. The ring extends above the domain
-# boundary (absorbed by the adiabatic absorber on +y side).
-# domain_y must be large enough that:
-#   - PML on -y (1 μm) doesn't overlap the waveguide at y=0
-#   - Absorber on +y doesn't overlap the coupling region (ring bottom at y≈0.3)
-#   - The waveguide has ≥1 μm clearance from any absorbing boundary
-domain_x = 2 * (ring_radius + 2.0)  # enough room for through/drop monitors + PML
-domain_y = 8.0                       # matches Tidy3D tutorial; PML/absorber well separated from waveguide
-domain_z = 4 * wg_height + 2.0      # waveguide height + cladding + PML
+# Physical domain (excluding PML/absorber margins). The ring extends above
+# the domain boundary (absorbed by the adiabatic absorber on +y side).
+# Matches Tidy3D domain: Lx = 2R + 2λ, Ly = R/2 + gap + 2w + λ, Lz = 9h
+# NOTE: In Khronos, PML is INSIDE cell_size (unlike Tidy3D where PML is
+# external). We add PML/absorber margins when constructing the Simulation.
+domain_x = 2 * ring_radius + 2 * λ_center
+domain_y = ring_radius / 2 + coupling_gap + 2 * wg_width + λ_center
+domain_z = 9 * wg_height
+pml_thickness = 1.0  # μm
 
 resolution = 25  # grid points per μm (matching Tidy3D's min_steps_per_wvl=25)
+
+# In Khronos, PML/absorber regions are INSIDE cell_size.
+# Compute absorber thickness so we can size the cell correctly.
+absorber_num_layers = 60
+absorber_thickness = absorber_num_layers / resolution  # 2.4 μm
 
 # ------------------------------------------------------------------- #
 # Geometry
@@ -168,11 +180,11 @@ drop_monitor = Khronos.ModeMonitor(
     ),
 )
 
-# Field monitor at z=0 for visualization
+# Field monitor at z=0 for visualization (covers full XY plane like Tidy3D)
 field_monitor = Khronos.DFTMonitor(
     component = Khronos.Ey(),
-    center = [0.0, domain_y / 2 - 2.0, 0.0],
-    size = [domain_x - 2.0, domain_y - 2.0, 0.0],
+    center = [0.0, domain_y / 4, 0.0],
+    size = [domain_x, domain_y, 0.0],
     frequencies = [freq_center],
 )
 
@@ -185,8 +197,6 @@ monitors = Khronos.Monitor[through_monitor, ref_monitor, drop_monitor, field_mon
 # An adiabatic absorber on +y prevents PML divergence from the
 # non-translationally-invariant ring geometry.
 
-pml_thickness = 1.0  # μm
-
 boundaries = [
     [pml_thickness, pml_thickness],  # x: PML both sides
     [pml_thickness, 0.0],            # y: PML on -y, none on +y (absorber instead)
@@ -195,7 +205,7 @@ boundaries = [
 
 absorbers = [
     nothing,                                        # x: no absorber
-    [nothing, Khronos.Absorber(num_layers = 40)],   # y: absorber on +y side only
+    [nothing, Khronos.Absorber(num_layers = 60)],   # y: absorber on +y side only
     nothing,                                        # z: no absorber
 ]
 
@@ -203,9 +213,19 @@ absorbers = [
 # Simulation
 # ------------------------------------------------------------------- #
 
+# Cell size: physical domain + PML/absorber margins
+# x: PML both sides; y: PML on -y, absorber on +y; z: PML both sides
+cell_x = domain_x + 2 * pml_thickness
+cell_y = domain_y + pml_thickness + absorber_thickness
+cell_z = domain_z + 2 * pml_thickness
+
+# Cell center: physical center shifted by asymmetric y margins
+phys_center_y = domain_y / 4
+cell_center_y = phys_center_y + (absorber_thickness - pml_thickness) / 2
+
 sim = Khronos.Simulation(
-    cell_size = [domain_x, domain_y, domain_z],
-    cell_center = [0.0, domain_y / 2 - 2.0, 0.0],
+    cell_size = [cell_x, cell_y, cell_z],
+    cell_center = [0.0, cell_center_y, 0.0],
     resolution = resolution,
     geometry = geometry,
     sources = sources,
@@ -225,7 +245,8 @@ println("Ring radius: $(ring_radius) μm")
 println("Coupling gap: $(coupling_gap) μm")
 println("Waveguide: $(wg_width) × $(wg_height) μm (Si)")
 println("Wavelength range: $(λ_min)–$(λ_max) μm")
-println("Domain: $(domain_x) × $(domain_y) × $(domain_z) μm")
+println("Physical domain: $(domain_x) × $(domain_y) × $(domain_z) μm")
+println("Cell (incl. PML/absorber): $(cell_x) × $(round(cell_y, digits=1)) × $(cell_z) μm")
 println("Resolution: $(resolution) pts/μm")
 println("=" ^ 60)
 
@@ -240,7 +261,7 @@ println("=" ^ 60)
 # XY cross-section at z=0 — shows waveguide and ring coupling region
 fig_geom_xy = Khronos.plot_geometry_slice(
     geometry, :z, 0.0;
-    x_range = (-domain_x / 2 + pml_thickness, domain_x / 2 - pml_thickness),
+    x_range = (-domain_x / 2, domain_x / 2),
     y_range = (-1.0, ring_center_y + ring_radius + 1.0),
     resolution = 500,
     colormap = :viridis,
@@ -253,7 +274,7 @@ println("Saved: ring_coupler_geometry_xy.png")
 fig_3panel = Khronos.plot_geometry_cross_sections(
     geometry;
     center = [0.0, ring_center_y / 2, 0.0],
-    span = [domain_x - 2 * pml_thickness, ring_center_y + ring_radius + 2.0, domain_z - 2 * pml_thickness],
+    span = [domain_x, ring_center_y + ring_radius + 2.0, domain_z],
     resolution = 400,
     colormap = :viridis,
 )
@@ -265,7 +286,7 @@ fig_gap = Khronos.plot_geometry_slice(
     geometry, :z, 0.0;
     x_range = (-2.0, 2.0),
     y_range = (-0.5, 1.5),
-    resolution = 600,
+    resolution = 800,
     colormap = :viridis,
     title = "Coupling gap close-up (gap = $(coupling_gap) μm)",
 )
@@ -299,8 +320,8 @@ step_start = sim.timestep
 Khronos.run(sim,
     until_after_sources = Khronos.stop_when_dft_decayed(
         tolerance = 1e-6,
-        minimum_runtime = 100.0,  # at least ~1 ring round-trip (2πR·n_eff ≈ 88)
-        maximum_runtime = 500.0,
+        minimum_runtime = 600.0,  # several ring round-trips (2πR·n_eff ≈ 88 per trip)
+        maximum_runtime = 1500.0,
     ),
 )
 
@@ -354,8 +375,25 @@ drop_a_plus, drop_a_minus = Khronos.compute_mode_amplitudes(drop_data)
 # Normalize by reference monitor to remove source spectrum envelope.
 # T(f) = |a_port(f) / a_ref(f)|²
 # This is the standard approach (MEEP, Tidy3D) for computing S-parameters.
-T_through = abs2.(through_a_plus ./ ref_a_plus)  # |t|²
-T_drop = abs2.(drop_a_plus ./ ref_a_plus)        # |κ|²
+#
+# At band edges where the source has negligible energy, |ref_a_plus| → 0
+# and the ratio becomes unreliable. Mask out frequencies where the reference
+# amplitude is below a threshold fraction of the peak.
+ref_amplitude = abs.(ref_a_plus)
+ref_threshold = 0.05 * maximum(ref_amplitude)  # 5% of peak
+reliable = ref_amplitude .> ref_threshold
+
+T_through = zeros(n_freqs)
+T_drop = zeros(n_freqs)
+T_through[reliable] .= abs2.(through_a_plus[reliable] ./ ref_a_plus[reliable])
+T_drop[reliable] .= abs2.(drop_a_plus[reliable] ./ ref_a_plus[reliable])
+
+# Mark unreliable points as NaN for plotting (gaps in lines)
+T_through[.!reliable] .= NaN
+T_drop[.!reliable] .= NaN
+
+n_reliable = count(reliable)
+println("Reliable frequency points: $n_reliable / $n_freqs (threshold = $(round(ref_threshold, sigdigits=3)))")
 
 # Convert frequencies to wavelengths
 wavelengths = 1.0 ./ monitor_freqs
@@ -364,20 +402,26 @@ t_post = time() - t_post_start
 println("Mode overlap computation: $(round(t_post, digits=2))s")
 
 println("\nThrough port transmission |t|² (sampled):")
-for idx in 1:10:n_freqs
-    println("  λ = $(round(wavelengths[idx], digits=4)) μm: |t|² = $(round(T_through[idx], digits=4))")
+for idx in 1:20:n_freqs
+    val = T_through[idx]
+    valstr = isnan(val) ? "masked" : "$(round(val, digits=4))"
+    println("  λ = $(round(wavelengths[idx], digits=4)) μm: |t|² = $valstr")
 end
 
 println("\nDrop port coupling |κ|² (sampled):")
-for idx in 1:10:n_freqs
-    println("  λ = $(round(wavelengths[idx], digits=4)) μm: |κ|² = $(round(T_drop[idx], digits=4))")
+for idx in 1:20:n_freqs
+    val = T_drop[idx]
+    valstr = isnan(val) ? "masked" : "$(round(val, digits=4))"
+    println("  λ = $(round(wavelengths[idx], digits=4)) μm: |κ|² = $valstr")
 end
 
-# Report conservation
+# Report conservation (only for reliable points)
 T_total = T_through .+ T_drop
 println("\nEnergy conservation |t|² + |κ|² (sampled):")
-for idx in 1:10:n_freqs
-    println("  λ = $(round(wavelengths[idx], digits=4)) μm: $(round(T_total[idx], digits=4))")
+for idx in 1:20:n_freqs
+    val = T_total[idx]
+    valstr = isnan(val) ? "masked" : "$(round(val, digits=4))"
+    println("  λ = $(round(wavelengths[idx], digits=4)) μm: $valstr")
 end
 
 # Expected FSR
@@ -402,6 +446,7 @@ ax_spectra = Axis(fig_spectra[1, 1],
     ylabelsize = 14,
 )
 
+# NaN values are automatically skipped by CairoMakie lines!
 lines!(ax_spectra, wavelengths, T_through,
     color = :blue, linewidth = 2, label = "|t|² (through)")
 lines!(ax_spectra, wavelengths, T_drop,
@@ -410,7 +455,7 @@ lines!(ax_spectra, wavelengths, T_total,
     color = :gray, linewidth = 1, linestyle = :dash, label = "|t|² + |κ|²")
 
 axislegend(ax_spectra, position = :rt)
-ylims!(ax_spectra, -0.05, 1.15)
+ylims!(ax_spectra, -0.05, 1.1)
 
 save("ring_coupler_spectra.png", fig_spectra)
 println("Saved: ring_coupler_spectra.png")
