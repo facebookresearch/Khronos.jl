@@ -22,12 +22,117 @@ function _mode_cache_key(monitor::ModeMonitor, normal_axis::Int)
         monitor.mode_spec.mode_solver_resolution,
         monitor.mode_spec.solver_tolerance,
         monitor.mode_spec.num_modes,
+        monitor.mode_spec.num_mode_freqs,
         monitor.frequencies,
     ))
 end
 
 function clear_mode_cache!()
     empty!(_mode_profile_cache)
+end
+
+# ------------------------------------------------------------------- #
+# Frequency interpolation for mode profiles
+# ------------------------------------------------------------------- #
+
+"""
+    _interpolate_mode_profiles(coarse_freqs, coarse_modes, target_freqs)
+
+Interpolate mode profiles solved at `coarse_freqs` to all `target_freqs`.
+Uses cubic spline interpolation on each pixel of each field component.
+"""
+function _interpolate_mode_profiles(
+    coarse_freqs::Vector{Float64},
+    coarse_modes::Vector{VectorModesolver.Mode},
+    target_freqs::Vector{Float64},
+)
+    n_coarse = length(coarse_freqs)
+    n_target = length(target_freqs)
+
+    # Get field shape from the first mode (all coarse modes share the same grid)
+    ref = coarse_modes[1]
+    field_shape = size(ref.Ex)  # e.g. (nx, ny, 1) or (1, nx, ny)
+    n_pixels = prod(field_shape)
+
+    # Stack coarse data
+    neff_coarse = [m.neff for m in coarse_modes]
+    lambda_coarse = [m.λ for m in coarse_modes]
+
+    field_names = (:Ex, :Ey, :Ez, :Hx, :Hy, :Hz)
+
+    # Flatten each field to a 1D vector of n_pixels for each coarse frequency
+    # coarse_flat[fn] is (n_coarse, n_pixels) matrix
+    coarse_flat = Dict{Symbol, Matrix{ComplexF64}}()
+    for fn in field_names
+        mat = zeros(ComplexF64, n_coarse, n_pixels)
+        for ic in 1:n_coarse
+            f = getfield(coarse_modes[ic], fn)
+            mat[ic, :] .= vec(f)
+        end
+        coarse_flat[fn] = mat
+    end
+
+    # Phase alignment: eigenvectors have arbitrary global phase at each frequency.
+    # Align all modes to have the same phase as the first mode at the pixel with
+    # maximum amplitude in Ex (the dominant transverse component for TE modes).
+    ref_ex = coarse_flat[:Ex]
+    # Find the pixel with the largest amplitude across all coarse modes
+    avg_amplitude = zeros(n_pixels)
+    for ip in 1:n_pixels
+        avg_amplitude[ip] = sum(abs.(ref_ex[:, ip]))
+    end
+    ref_pixel = argmax(avg_amplitude)
+
+    # Compute phase correction for each coarse mode relative to the first
+    ref_phase = angle(ref_ex[1, ref_pixel])
+    for ic in 2:n_coarse
+        phase_diff = angle(ref_ex[ic, ref_pixel]) - ref_phase
+        correction = exp(-im * phase_diff)
+        for fn in field_names
+            coarse_flat[fn][ic, :] .*= correction
+        end
+    end
+
+    # Interpolate neff and lambda
+    neff_itp = Interpolations.interpolate((coarse_freqs,), neff_coarse, Interpolations.Gridded(Interpolations.Linear()))
+    lambda_itp = Interpolations.interpolate((coarse_freqs,), lambda_coarse, Interpolations.Gridded(Interpolations.Linear()))
+
+    # Interpolate each pixel of each field component
+    target_flat = Dict{Symbol, Matrix{ComplexF64}}()
+    for fn in field_names
+        src = coarse_flat[fn]
+        dst = zeros(ComplexF64, n_target, n_pixels)
+        for ip in 1:n_pixels
+            re_vals = real.(src[:, ip])
+            im_vals = imag.(src[:, ip])
+            re_itp = Interpolations.interpolate((coarse_freqs,), re_vals, Interpolations.Gridded(Interpolations.Linear()))
+            im_itp = Interpolations.interpolate((coarse_freqs,), im_vals, Interpolations.Gridded(Interpolations.Linear()))
+            for it in 1:n_target
+                dst[it, ip] = re_itp(target_freqs[it]) + im * im_itp(target_freqs[it])
+            end
+        end
+        target_flat[fn] = dst
+    end
+
+    # Build Mode objects for each target frequency
+    profiles = VectorModesolver.Mode[]
+    for it in 1:n_target
+        mode = VectorModesolver.Mode(
+            λ = lambda_itp(target_freqs[it]),
+            neff = neff_itp(target_freqs[it]),
+            x = collect(ref.x),
+            y = collect(ref.y),
+            Ex = reshape(target_flat[:Ex][it, :], field_shape),
+            Ey = reshape(target_flat[:Ey][it, :], field_shape),
+            Ez = reshape(target_flat[:Ez][it, :], field_shape),
+            Hx = reshape(target_flat[:Hx][it, :], field_shape),
+            Hy = reshape(target_flat[:Hy][it, :], field_shape),
+            Hz = reshape(target_flat[:Hz][it, :], field_shape),
+        )
+        push!(profiles, mode)
+    end
+
+    return profiles
 end
 
 # ------------------------------------------------------------------- #
@@ -87,20 +192,52 @@ function init_mode_monitor(sim, monitor::ModeMonitor)
     cache_key = _mode_cache_key(monitor, normal_axis)
 
     mode_profiles = get!(_mode_profile_cache, cache_key) do
-        profiles = VectorModesolver.Mode[]
-        for freq in monitor.frequencies
-            mode = get_mode_profiles(;
-                frequency = freq,
-                mode_solver_resolution = mode_spec.mode_solver_resolution,
-                mode_index = mode_spec.num_modes,
-                center = copy(monitor.center),
-                size = copy(monitor.size),
-                solver_tolerance = mode_spec.solver_tolerance,
-                geometry = geometry,
-            )
-            push!(profiles, mode)
+        all_freqs = Float64.(monitor.frequencies)
+        n_freqs = length(all_freqs)
+        n_coarse = mode_spec.num_mode_freqs
+
+        # Decide whether to interpolate or solve every frequency
+        if n_coarse <= 0 || n_coarse >= n_freqs
+            # Full solve at every frequency (original behavior)
+            profiles = VectorModesolver.Mode[]
+            for freq in all_freqs
+                mode = get_mode_profiles(;
+                    frequency = freq,
+                    mode_solver_resolution = mode_spec.mode_solver_resolution,
+                    mode_index = mode_spec.num_modes,
+                    center = copy(monitor.center),
+                    size = copy(monitor.size),
+                    solver_tolerance = mode_spec.solver_tolerance,
+                    geometry = geometry,
+                )
+                push!(profiles, mode)
+            end
+            profiles
+        else
+            # Coarse solve + interpolation
+            coarse_indices = round.(Int, range(1, n_freqs, length = n_coarse))
+            coarse_freqs = all_freqs[coarse_indices]
+
+            @info("  Mode interpolation: solving at $n_coarse of $n_freqs frequencies")
+
+            # Solve at coarse frequencies
+            coarse_modes = VectorModesolver.Mode[]
+            for freq in coarse_freqs
+                mode = get_mode_profiles(;
+                    frequency = freq,
+                    mode_solver_resolution = mode_spec.mode_solver_resolution,
+                    mode_index = mode_spec.num_modes,
+                    center = copy(monitor.center),
+                    size = copy(monitor.size),
+                    solver_tolerance = mode_spec.solver_tolerance,
+                    geometry = geometry,
+                )
+                push!(coarse_modes, mode)
+            end
+
+            # Interpolate to all target frequencies
+            _interpolate_mode_profiles(coarse_freqs, coarse_modes, all_freqs)
         end
-        profiles
     end
 
     md = ModeMonitorData(

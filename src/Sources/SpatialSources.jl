@@ -277,8 +277,138 @@ function CustomCurrentSource(;
 end
 
 # ---------------------------------------------------------- #
-# Planewave source
+# TFSF (Total-Field/Scattered-Field) source
 # ---------------------------------------------------------- #
+
+"""
+    TFSFSource(;
+    time_profile, center, size, injection_axis, direction,
+    polarization_angle, amplitude, ε, μ, n_grid
+) -> Vector{EquivalentSourceData}
+
+Total-Field/Scattered-Field source. Creates a box that separates the
+simulation into total-field (inside) and scattered-field (outside) regions.
+
+Implemented as 6 EquivalentSource surfaces (one per face of the TFSF box)
+that inject the analytical incident plane wave.
+
+Returns a vector of sources to be concatenated with other sources.
+"""
+function TFSFSource(;
+    time_profile::TimeSource,
+    center::AbstractVector{<:Real} = [0.0, 0.0, 0.0],
+    size::AbstractVector{<:Real},
+    injection_axis::Int = 3,       # 1=x, 2=y, 3=z
+    direction::Int = -1,           # +1 or -1
+    polarization_angle::Real = 0.0,
+    amplitude::Number = 1.0,
+    ε::Number = 1.0,
+    μ::Number = 1.0,
+    n_grid::Int = 50,              # grid resolution for field sampling on each face
+)
+    @assert injection_axis in 1:3
+    @assert direction in (-1, 1)
+
+    # Compute k-vector
+    k_hat = zeros(3)
+    k_hat[injection_axis] = Float64(direction)
+    freq = get_frequency(time_profile)
+    k_mag = 2π * freq * sqrt(ε * μ)
+
+    Z0 = sqrt(μ / ε)
+
+    # Compute polarization vector (perpendicular to k)
+    # Convention: default pol is along the first transverse axis
+    transverse_axes = setdiff(1:3, [injection_axis])
+    e_pol = zeros(3)
+    e_pol[transverse_axes[1]] = cos(polarization_angle)
+    e_pol[transverse_axes[2]] = sin(polarization_angle)
+
+    # H polarization: H = k̂ × E / Z0
+    h_pol = cross(k_hat, e_pol) / Z0
+
+    # Generate the 6 face sources
+    sources = EquivalentSourceData[]
+    half = Float64.(size) ./ 2
+
+    for axis in 1:3
+        for side in (-1, 1)  # -1 = lower face, +1 = upper face
+            face_center = copy(Float64.(center))
+            face_center[axis] += side * half[axis]
+
+            face_size = copy(Float64.(size))
+            face_size[axis] = 0.0  # planar surface
+
+            # Compute E and H fields on a grid covering this face
+            other_axes = setdiff(1:3, [axis])
+            n1 = max(2, round(Int, face_size[other_axes[1]] * n_grid / maximum(size)))
+            n2 = max(2, round(Int, face_size[other_axes[2]] * n_grid / maximum(size)))
+
+            # Create coordinate grids
+            r1 = range(face_center[other_axes[1]] - face_size[other_axes[1]] / 2,
+                       face_center[other_axes[1]] + face_size[other_axes[1]] / 2, length = n1)
+            r2 = range(face_center[other_axes[2]] - face_size[other_axes[2]] / 2,
+                       face_center[other_axes[2]] + face_size[other_axes[2]] / 2, length = n2)
+
+            # Allocate 3D field arrays (one dim is 1 for the planar surface)
+            field_shape = ones(Int, 3)
+            field_shape[other_axes[1]] = n1
+            field_shape[other_axes[2]] = n2
+
+            Ex_arr = zeros(ComplexF64, field_shape...)
+            Ey_arr = zeros(ComplexF64, field_shape...)
+            Ez_arr = zeros(ComplexF64, field_shape...)
+            Hx_arr = zeros(ComplexF64, field_shape...)
+            Hy_arr = zeros(ComplexF64, field_shape...)
+            Hz_arr = zeros(ComplexF64, field_shape...)
+
+            for (i2, c2) in enumerate(r2), (i1, c1) in enumerate(r1)
+                pos = zeros(3)
+                pos[axis] = face_center[axis]
+                pos[other_axes[1]] = c1
+                pos[other_axes[2]] = c2
+
+                phase = exp(-im * k_mag * dot(k_hat, pos))
+
+                idx = ones(Int, 3)
+                idx[other_axes[1]] = i1
+                idx[other_axes[2]] = i2
+
+                Ex_arr[idx...] = amplitude * e_pol[1] * phase
+                Ey_arr[idx...] = amplitude * e_pol[2] * phase
+                Ez_arr[idx...] = amplitude * e_pol[3] * phase
+                Hx_arr[idx...] = amplitude * h_pol[1] * phase
+                Hy_arr[idx...] = amplitude * h_pol[2] * phase
+                Hz_arr[idx...] = amplitude * h_pol[3] * phase
+            end
+
+            fields = Dict(
+                Ex() => Ex_arr, Ey() => Ey_arr, Ez() => Ez_arr,
+                Hx() => Hx_arr, Hy() => Hy_arr, Hz() => Hz_arr,
+            )
+
+            # The EquivalentSource normal points along the zero-size axis.
+            # For TFSF, we want the injection to go INTO the box.
+            # The EquivalentSource with normal n̂ injects fields in the +n̂ direction.
+            # At the +side face (side=+1), the outward normal is +axis, but we
+            # want injection in -axis (into box), so we negate the amplitude.
+            # At the -side face (side=-1), the outward normal is -axis, but
+            # get_normal_vector returns +axis, and we want injection in +axis
+            # (into box), so we keep the amplitude positive.
+            face_amplitude = (side == 1) ? -1.0 : 1.0
+
+            push!(sources, EquivalentSource(
+                time_profile = time_profile,
+                fields = fields,
+                center = face_center,
+                size = face_size,
+                amplitude = face_amplitude,
+            ))
+        end
+    end
+
+    return sources
+end
 """
     PlaneWaveSource(;
     time_profile::TimeSource,

@@ -37,9 +37,7 @@ function step!(sim::SimulationData)
         CUDA.launch(sim._cuda_graph_exec_H)
         update_H_monitors!(sim, t)
         CUDA.launch(sim._cuda_graph_exec_E)
-        # ADE polarization update AFTER E update (semi-implicit meep ordering):
-        # E^{n+1} = ε_inv_eff * (D^{n+1} - P^n), then P^{n+1} = f(P^n, P^{n-1}, E^{n+1}).
-        # The chi1 correction in ε_inv_eff accounts for P's response to the new E.
+        step_chi3_correction!(sim)
         step_polarization!(sim)
         update_E_monitors!(sim, t + sim.Δt / 2)
         increment_timestep!(sim)
@@ -51,7 +49,7 @@ function step!(sim::SimulationData)
         CUDA.launch(sim._cuda_graph_exec_H)
         update_H_monitors!(sim, t)
         CUDA.launch(sim._cuda_graph_exec_E)
-        # ADE polarization update AFTER E update (semi-implicit meep ordering)
+        step_chi3_correction!(sim)
         step_polarization!(sim)
         update_E_monitors!(sim, t + sim.Δt / 2)
         increment_timestep!(sim)
@@ -73,7 +71,8 @@ function step!(sim::SimulationData)
 
     step_E_fused!(sim)
 
-    # ADE polarization update AFTER E update (semi-implicit meep ordering):
+    # χ3 Kerr nonlinear correction (applied after E update, before polarization)
+    step_chi3_correction!(sim)
     # E^{n+1} uses old P^n (with chi1 correction in ε_inv_eff), then P^{n+1}
     # is computed using the new E^{n+1}. This matches meep/src/step.cpp where
     # susceptibility P is updated after E, creating the correct semi-implicit coupling.
@@ -96,6 +95,8 @@ Returns true if capture succeeded, false otherwise.
 function _try_capture_graphs!(sim::SimulationData)
     # Allow disabling via environment variable
     get(ENV, "KHRONOS_CUDA_GRAPHS", "1") == "0" && return false
+    # Disable for complex fields (Bloch BC) — graph capture assumes fixed types
+    _fields_are_complex(sim) && return false
 
     try
         graph_H = CUDA.capture(; throw_error=false) do
@@ -123,6 +124,10 @@ end
 
 # FIXME for non PML
 get_step_boundaries(sim) = (sim.Nx, sim.Ny, sim.Nz)
+
+# Check if fields are complex-valued (Bloch BC)
+_fields_are_complex(sim) = !isnothing(sim.chunk_data) && !isempty(sim.chunk_data) &&
+    !isnothing(sim.chunk_data[1].fields.fEx) && eltype(sim.chunk_data[1].fields.fEx) <: Complex
 
 function step_B_from_E!(sim::SimulationData)
     curl_B_kernel = sim._cached_curl_kernel
@@ -759,7 +764,7 @@ function step_H_fused!(sim::SimulationData)
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
             # Raw CUDA path: scalar μ, B eliminated — H_new = H_old + μ⁻¹·Δt·curl(E)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
@@ -784,7 +789,7 @@ function step_H_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_B && g.μ_inv isa Real && f.fPBx isa Nothing
             # Raw CUDA PML path: fused curl+update, no material σ, no polarizability
             # Note: safe to use when has_sources && !sa because source arrays are zero after termination
@@ -859,7 +864,7 @@ function step_E_fused!(sim::SimulationData)
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA path: per-voxel ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
             # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
@@ -870,7 +875,7 @@ function step_E_fused!(sim::SimulationData)
                 g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
                 iNx)
-        elseif backend_engine isa CUDABackend && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
+        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA path: scalar ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
             # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
@@ -896,7 +901,7 @@ function step_E_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_D && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA PML path: per-voxel ε, fused curl+update
             pf = chunk.spec.physics
@@ -921,7 +926,7 @@ function step_E_fused!(sim::SimulationData)
                 g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
                 iNx, pml_x, pml_y, pml_z)
-        elseif use_raw_pml && backend_engine isa CUDABackend && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_D && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA PML path: scalar ε, fused curl+update
             pf = chunk.spec.physics
@@ -1321,10 +1326,10 @@ end
 
 function update_H_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
-        # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
+        # Skip monitor data that don't have .component (e.g., Near2FarMonitorData)
         hasfield(typeof(m), :component) || continue
         # Decimation: skip DFT updates on non-decimation steps
-        if m.decimation > 1 && sim.timestep % m.decimation != 0
+        if hasfield(typeof(m), :decimation) && m.decimation > 1 && sim.timestep % m.decimation != 0
             continue
         end
         if is_magnetic(m.component)
@@ -1338,10 +1343,10 @@ end
 
 function update_E_monitors!(sim::SimulationData, time)
     for m in sim.monitor_data
-        # Skip non-DFT monitor data (e.g., Near2FarMonitorData) that don't have .component
+        # Skip monitor data that don't have .component (e.g., Near2FarMonitorData)
         hasfield(typeof(m), :component) || continue
         # Decimation: skip DFT updates on non-decimation steps
-        if m.decimation > 1 && sim.timestep % m.decimation != 0
+        if hasfield(typeof(m), :decimation) && m.decimation > 1 && sim.timestep % m.decimation != 0
             continue
         end
         if is_electric(m.component)
@@ -1402,7 +1407,7 @@ end
 end
 
 @inline function generic_curl!(
-    K::Real,
+    K,
     C::Nothing,
     U::AbstractArray,
     T::AbstractArray,
@@ -1419,7 +1424,7 @@ end
 end
 
 @inline function generic_curl!(
-    K::Real,
+    K,
     C::Nothing,
     U::Nothing,
     T,
@@ -1434,7 +1439,7 @@ end
 end
 
 @inline function generic_curl!(
-    K::Real,
+    K,
     C::Nothing,
     U::Nothing,
     T,
@@ -1449,7 +1454,7 @@ end
 end
 
 @inline function generic_curl!(
-    K::Real,
+    K,
     C::Nothing,
     U::Nothing,
     T,
@@ -1463,7 +1468,7 @@ end
 end
 
 @inline function generic_curl!(
-    K::Real,
+    K,
     C::Nothing,
     U::Nothing,
     T::AbstractArray,
@@ -1745,6 +1750,62 @@ Zero out the total P-field arrays before re-accumulation.
     fPDx[fidx] = zero(eltype(fPDx))
     fPDy[fidx] = zero(eltype(fPDy))
     fPDz[fidx] = zero(eltype(fPDz))
+end
+
+# ------------------------------------------------------------------- #
+# χ3 Kerr nonlinear correction
+#
+# Applied after the E-field update. Uses |E_new|² as approximation of
+# |E_old|² (self-consistent single-step iteration, standard practice).
+# E_corrected = E_new / (1 + χ3 * |E|²)
+# ------------------------------------------------------------------- #
+
+@kernel function _chi3_correction_kernel!(
+    Ex, Ey, Ez,
+    @Const(chi3),
+)
+    ix, iy, iz = @index(Global, NTuple)
+    fx, fy, fz = ix + 1, iy + 1, iz + 1
+
+    @inbounds begin
+        chi3_val = chi3[ix, iy, iz]
+        if chi3_val != zero(chi3_val)
+            ex = Ex[fx, fy, fz]
+            ey = Ey[fx, fy, fz]
+            ez = Ez[fx, fy, fz]
+            E_sq = real(ex * conj(ex) + ey * conj(ey) + ez * conj(ez))
+            correction = 1 / (1 + chi3_val * E_sq)
+            Ex[fx, fy, fz] = ex * correction
+            Ey[fx, fy, fz] = ey * correction
+            Ez[fx, fy, fz] = ez * correction
+        end
+    end
+end
+
+"""
+    step_chi3_correction!(sim)
+
+Apply Kerr nonlinear correction to E-fields after the linear update.
+No-op if no materials have chi3.
+"""
+function step_chi3_correction!(sim::SimulationData)
+    isnothing(sim.chunk_data) && return
+    wg = parse(Int, get(ENV, "KHRONOS_WORKGROUP_SIZE", "64"))
+
+    for chunk in sim.chunk_data
+        g = chunk.geometry_data
+        isnothing(g.chi3) && continue
+
+        f = chunk.fields
+        isnothing(f.fEx) && continue
+
+        _chi3_kernel = _chi3_correction_kernel!(backend_engine, (wg,))
+        _chi3_kernel(
+            f.fEx, f.fEy, f.fEz,
+            g.chi3,
+            ndrange = chunk.ndrange,
+        )
+    end
 end
 
 """

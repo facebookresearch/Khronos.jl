@@ -902,7 +902,9 @@ function _initialize_chunk_field_array(sim::SimulationData, component::Field, ch
     # Ghost cells are at raw indices 1 and N+2; interior at 2:(N+1).
     # Kernels use shifted indices (ix+1, iy+1, iz+1) to access interior cells.
     dims = _get_chunk_component_voxel_count(sim, component, chunk_gv) .+ 2
-    return KernelAbstractions.zeros(backend_engine, backend_number, dims...)
+    # Use complex arrays when Bloch BC is active
+    num_type = _needs_complex_fields(sim) ? complex_backend_number : backend_number
+    return KernelAbstractions.zeros(backend_engine, num_type, dims...)
 end
 
 """
@@ -1024,6 +1026,18 @@ function _slice_chunk_geometry(sim::SimulationData, spec::ChunkSpec)
         end
     end
 
+    # Slice chi3 array (uses Center grid, not staggered)
+    chi3_sliced = nothing
+    if !isnothing(gd.chi3)
+        s = chunk_gv.start_idx
+        dims = (chunk_gv.Nx, chunk_gv.Ny, max(1, chunk_gv.Nz))
+        if ndims == 2
+            chi3_sliced = gd.chi3[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1)]
+        else
+            chi3_sliced = _cuda_slice_3d(gd.chi3, s, dims)
+        end
+    end
+
     return GeometryData{backend_number,backend_array}(
         ε_inv_x = _slice(gd.ε_inv_x, Ex()),
         ε_inv_y = _slice(gd.ε_inv_y, Ey()),
@@ -1038,6 +1052,7 @@ function _slice_chunk_geometry(sim::SimulationData, spec::ChunkSpec)
         σBx = _slice(gd.σBx, Hx()),
         σBy = _slice(gd.σBy, Hy()),
         σBz = _slice(gd.σBz, Hz()),
+        chi3 = chi3_sliced,
     )
 end
 
@@ -1480,37 +1495,165 @@ No-op for single-chunk plans.
 """
 function connect_chunks!(sim::SimulationData)
     isnothing(sim.chunk_data) && return
-    length(sim.chunk_data) <= 1 && !is_distributed() && return
 
-    for (i, j, axis) in sim.chunk_plan.adjacency
-        gv_i = sim.chunk_plan.chunks[i].grid_volume
-        gv_j = sim.chunk_plan.chunks[j].grid_volume
+    has_periodic = _has_periodic_bc(sim)
 
-        # Forward connection: i -> j (i's upper face -> j's ghost at lower)
-        src_fwd = _make_send_range(gv_i, axis, :upper)
-        dst_fwd = _make_recv_range(gv_j, axis, :lower)
-        conn_fwd = HaloConnection(i, j, axis, src_fwd, dst_fwd)
+    # For multi-chunk or distributed: connect adjacent chunks
+    if length(sim.chunk_data) > 1 || is_distributed()
+        for (i, j, axis) in sim.chunk_plan.adjacency
+            gv_i = sim.chunk_plan.chunks[i].grid_volume
+            gv_j = sim.chunk_plan.chunks[j].grid_volume
 
-        # Reverse connection: j -> i
-        src_rev = _make_send_range(gv_j, axis, :lower)
-        dst_rev = _make_recv_range(gv_i, axis, :upper)
-        conn_rev = HaloConnection(j, i, axis, src_rev, dst_rev)
+            # Forward connection: i -> j (i's upper face -> j's ghost at lower)
+            src_fwd = _make_send_range(gv_i, axis, :upper)
+            dst_fwd = _make_recv_range(gv_j, axis, :lower)
+            conn_fwd = HaloConnection(i, j, axis, src_fwd, dst_fwd)
 
-        # In distributed mode, only add connections where at least one
-        # endpoint is local
-        local_i = _local_chunk_index(sim, i)
-        local_j = _local_chunk_index(sim, j)
+            # Reverse connection: j -> i
+            src_rev = _make_send_range(gv_j, axis, :lower)
+            dst_rev = _make_recv_range(gv_i, axis, :upper)
+            conn_rev = HaloConnection(j, i, axis, src_rev, dst_rev)
 
-        if !isnothing(local_i)
-            push!(sim.chunk_data[local_i].halo_send, conn_fwd)
-            push!(sim.chunk_data[local_i].halo_recv, conn_rev)
-        end
-        if !isnothing(local_j)
-            push!(sim.chunk_data[local_j].halo_recv, conn_fwd)
-            push!(sim.chunk_data[local_j].halo_send, conn_rev)
+            # In distributed mode, only add connections where at least one
+            # endpoint is local
+            local_i = _local_chunk_index(sim, i)
+            local_j = _local_chunk_index(sim, j)
+
+            if !isnothing(local_i)
+                push!(sim.chunk_data[local_i].halo_send, conn_fwd)
+                push!(sim.chunk_data[local_i].halo_recv, conn_rev)
+            end
+            if !isnothing(local_j)
+                push!(sim.chunk_data[local_j].halo_recv, conn_fwd)
+                push!(sim.chunk_data[local_j].halo_send, conn_rev)
+            end
         end
     end
+
+    # Add wraparound connections for periodic boundary conditions
+    if has_periodic
+        _add_periodic_connections!(sim)
+    end
+
     return
+end
+
+"""
+    _has_periodic_bc(sim) -> Bool
+
+Check if any axis has periodic boundary conditions.
+"""
+function _has_periodic_bc(sim::SimulationData)
+    isnothing(sim.boundary_conditions) && return false
+    for axis_bcs in sim.boundary_conditions
+        for bc in axis_bcs
+            if bc isa Periodic || bc isa Bloch
+                return true
+            end
+        end
+    end
+    return false
+end
+
+"""
+    _add_periodic_connections!(sim)
+
+Add wraparound halo connections for periodic/Bloch axes. For each periodic axis,
+the last interior cell wraps to the first ghost cell and vice versa.
+For Bloch axes, a phase factor exp(i·k·L) is applied during the copy.
+"""
+function _add_periodic_connections!(sim::SimulationData)
+    isnothing(sim.boundary_conditions) && return
+    chunks = sim.chunk_data
+
+    for (axis, axis_bcs) in enumerate(sim.boundary_conditions)
+        # Both sides must be Periodic or Bloch for wraparound
+        is_periodic = all(bc -> bc isa Periodic || bc isa Bloch, axis_bcs)
+        length(axis_bcs) < 2 && continue
+        !is_periodic && continue
+
+        # Compute Bloch phase factor if applicable
+        # Phase convention: field at x=L = field at x=0 * exp(i·k·L)
+        # So copying from upper to lower ghost: multiply by exp(-i·k·L)
+        # Copying from lower to upper ghost: multiply by exp(+i·k·L)
+        bloch_k = 0.0
+        if axis_bcs[1] isa Bloch
+            bloch_k = axis_bcs[1].k
+        elseif axis_bcs[2] isa Bloch
+            bloch_k = axis_bcs[2].k
+        end
+        L = sim.cell_size[axis]
+        phase_fwd = exp(im * bloch_k * L)    # lower → upper ghost
+        phase_rev = exp(-im * bloch_k * L)   # upper → lower ghost
+
+        bc_label = bloch_k != 0 ? "Bloch (k=$(round(bloch_k, digits=4)))" : "Periodic"
+
+        if length(chunks) == 1
+            # Single chunk: self-referencing wraparound
+            chunk = chunks[1]
+            gv = chunk.spec.grid_volume
+
+            # Upper interior → lower ghost (periodic/Bloch wrap)
+            src_upper = _make_send_range(gv, axis, :upper)
+            dst_lower = _make_recv_range(gv, axis, :lower)
+            conn_upper_to_lower = HaloConnection(1, 1, axis, src_upper, dst_lower, phase_rev)
+
+            # Lower interior → upper ghost (periodic/Bloch wrap)
+            src_lower = _make_send_range(gv, axis, :lower)
+            dst_upper = _make_recv_range(gv, axis, :upper)
+            conn_lower_to_upper = HaloConnection(1, 1, axis, src_lower, dst_upper, phase_fwd)
+
+            push!(chunk.halo_send, conn_upper_to_lower)
+            push!(chunk.halo_recv, conn_upper_to_lower)
+            push!(chunk.halo_send, conn_lower_to_upper)
+            push!(chunk.halo_recv, conn_lower_to_upper)
+        else
+            # Multi-chunk: find the first and last chunks along this axis
+            # and create wraparound connections between them
+            chunk_ids_sorted = _chunks_along_axis(sim.chunk_plan, axis)
+            if length(chunk_ids_sorted) >= 2
+                first_id = chunk_ids_sorted[1]
+                last_id = chunk_ids_sorted[end]
+                gv_first = sim.chunk_plan.chunks[first_id].grid_volume
+                gv_last = sim.chunk_plan.chunks[last_id].grid_volume
+
+                # Last → First lower ghost
+                src_fwd = _make_send_range(gv_last, axis, :upper)
+                dst_fwd = _make_recv_range(gv_first, axis, :lower)
+                conn_fwd = HaloConnection(last_id, first_id, axis, src_fwd, dst_fwd, phase_rev)
+
+                # First → Last upper ghost
+                src_rev = _make_send_range(gv_first, axis, :lower)
+                dst_rev = _make_recv_range(gv_last, axis, :upper)
+                conn_rev = HaloConnection(first_id, last_id, axis, src_rev, dst_rev, phase_fwd)
+
+                local_first = _local_chunk_index(sim, first_id)
+                local_last = _local_chunk_index(sim, last_id)
+
+                if !isnothing(local_first)
+                    push!(sim.chunk_data[local_first].halo_recv, conn_fwd)
+                    push!(sim.chunk_data[local_first].halo_send, conn_rev)
+                end
+                if !isnothing(local_last)
+                    push!(sim.chunk_data[local_last].halo_send, conn_fwd)
+                    push!(sim.chunk_data[local_last].halo_recv, conn_rev)
+                end
+            end
+        end
+
+        @info("  $bc_label BC on axis=$axis: wraparound halo connections added")
+    end
+end
+
+"""
+    _chunks_along_axis(plan, axis) -> Vector{Int}
+
+Return chunk IDs sorted by their position along the given axis.
+"""
+function _chunks_along_axis(plan::ChunkPlan, axis::Int)
+    ids = collect(1:plan.total_chunks)
+    sort!(ids, by = id -> plan.chunks[id].volume.center[axis])
+    return ids
 end
 
 """
@@ -1654,7 +1797,10 @@ Called once during prepare_simulation! to avoid per-step field lookups.
 """
 function precompute_halo_ops!(sim::SimulationData)
     isnothing(sim.chunk_data) && return
-    length(sim.chunk_data) <= 1 && return
+    # Skip if no halo connections exist
+    if length(sim.chunk_data) == 1 && isempty(sim.chunk_data[1].halo_send)
+        return
+    end
 
     sim._halo_ops_H = _precompute_halo_ops_for_group(sim, :H)
     sim._halo_ops_E = _precompute_halo_ops_for_group(sim, :E)
@@ -1742,7 +1888,10 @@ Uses precomputed copy operations when available for minimum CPU overhead.
 """
 function exchange_halos!(sim::SimulationData, field_group::Symbol)
     isnothing(sim.chunk_data) && return
-    length(sim.chunk_data) <= 1 && !is_distributed() && return
+    # Skip if no halo connections exist (single chunk without periodic BC)
+    if length(sim.chunk_data) == 1 && !is_distributed() && isempty(sim.chunk_data[1].halo_send)
+        return
+    end
 
     if !is_distributed()
         # Use precomputed fast path if available
@@ -1795,6 +1944,10 @@ function _exchange_halos_local!(sim::SimulationData, components)
                     sr_shifted = (sr[1] .+ 1, sr[2] .+ 1, sr[3] .+ 1)
                     dr_shifted = (dr[1] .+ 1, dr[2] .+ 1, dr[3] .+ 1)
                     _halo_copy!(dst_parent, dr_shifted, src_parent, sr_shifted)
+                    # Apply Bloch phase factor if non-trivial
+                    if conn.phase_factor != ComplexF64(1.0)
+                        @views dst_parent[dr_shifted[1], dr_shifted[2], dr_shifted[3]] .*= conn.phase_factor
+                    end
                 end
             end
         end

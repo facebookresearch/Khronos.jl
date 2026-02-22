@@ -56,6 +56,26 @@ abstract type Cylindrical <: Dimension end # Not yet implemented
 abstract type ThreeD <: Dimension end
 
 # -------------------------------------------------------- #
+# Subpixel smoothing
+# -------------------------------------------------------- #
+
+"""Subpixel smoothing mode for geometry rasterization."""
+abstract type SubpixelSmoothing end
+
+"""No smoothing — standard point sampling (default)."""
+struct NoSmoothing <: SubpixelSmoothing end
+
+"""Volume averaging — isotropic ε̄ = f·ε₁ + (1-f)·ε₂."""
+struct VolumeAveraging <: SubpixelSmoothing end
+
+"""
+Anisotropic smoothing (Farjadpour et al. 2006).
+Uses interface normal to compute direction-dependent effective ε.
+Achieves second-order convergence at dielectric interfaces.
+"""
+struct AnisotropicSmoothing <: SubpixelSmoothing end
+
+# -------------------------------------------------------- #
 # utils.jl
 # -------------------------------------------------------- #
 
@@ -131,6 +151,15 @@ export Fields
 # -------------------------------------------------------- #
 # Boundaries.jl
 # -------------------------------------------------------- #
+
+abstract type BoundaryCondition end
+struct PML <: BoundaryCondition end
+struct Periodic <: BoundaryCondition end
+@with_kw struct Bloch <: BoundaryCondition
+    k::Float64 = 0.0
+end
+struct PECBoundary <: BoundaryCondition end
+struct PMCBoundary <: BoundaryCondition end
 
 @with_kw struct BoundaryData{T}
     # either the PML conductivity or the normal conductivity
@@ -208,6 +237,8 @@ We may need to change that later.
     σBx::Union{A,Nothing} = nothing
     σBy::Union{A,Nothing} = nothing
     σBz::Union{A,Nothing} = nothing
+
+    chi3::Union{A,Nothing} = nothing   # per-voxel Kerr χ3 coefficient
 end
 
 @with_kw struct Material{N}
@@ -236,6 +267,8 @@ end
     σBx::Union{Nothing,N} = nothing
     σBy::Union{Nothing,N} = nothing
     σBz::Union{Nothing,N} = nothing
+
+    chi3::Union{Nothing,N} = nothing  # Kerr nonlinearity coefficient
 
     susceptibilities::Vector{Susceptibility} = Susceptibility[]
 end
@@ -396,6 +429,7 @@ Configuration for the mode solver used by ModeMonitor.
     geometry::Vector{Object} = Object[]
     mode_solver_resolution::Int = 50
     solver_tolerance::Float64 = 1e-6
+    num_mode_freqs::Int = 5   # coarse frequency points for mode interpolation (0 = solve every freq)
 end
 
 """
@@ -439,6 +473,65 @@ One dimension of `size` must be zero (planar cross-section).
     mode_spec::ModeSpec = ModeSpec()
     decimation::Int64 = 1
     monitor_data::Union{Nothing, ModeMonitorData} = nothing
+end
+
+# -------------------------------------------------------- #
+# FluxMonitor.jl
+# -------------------------------------------------------- #
+
+"""
+    FluxMonitorData
+
+Internal data for flux computation. Stores references to 4 tangential DFT
+monitors (2 E + 2 H) and grid info for Poynting flux integration.
+"""
+@with_kw mutable struct FluxMonitorData <: MonitorData
+    normal_axis::Int                              # 1=x, 2=y, 3=z
+    tangential_E_monitors::Vector{DFTMonitor}     # 2 tangential E-field DFT monitors
+    tangential_H_monitors::Vector{DFTMonitor}     # 2 tangential H-field DFT monitors
+    frequencies::Vector{Float64}
+    dx::Float64 = 0.0
+    dy::Float64 = 0.0
+    dz::Float64 = 0.0
+end
+
+"""
+    FluxMonitor
+
+Monitor that records tangential E/H fields on a planar surface and computes
+the Poynting flux (power flow) through the surface at each frequency.
+
+One dimension of `size` must be zero (planar surface).
+"""
+@with_kw mutable struct FluxMonitor <: Monitor
+    center::Vector{<:Number}
+    size::Vector{<:Number}          # one dimension must be 0
+    frequencies::Vector{<:Number}
+    decimation::Int64 = 1
+    monitor_data::Union{Nothing, FluxMonitorData} = nothing
+end
+
+# -------------------------------------------------------- #
+# DiffractionMonitor.jl
+# -------------------------------------------------------- #
+
+@with_kw mutable struct DiffractionMonitorData <: MonitorData
+    normal_axis::Int
+    tangential_E_monitors::Vector{DFTMonitor}
+    tangential_H_monitors::Vector{DFTMonitor}
+    frequencies::Vector{Float64}
+    dx::Float64 = 0.0
+    dy::Float64 = 0.0
+    dz::Float64 = 0.0
+    cell_size::Vector{Float64} = Float64[]
+end
+
+@with_kw mutable struct DiffractionMonitor <: Monitor
+    center::Vector{<:Number}
+    size::Vector{<:Number}          # one dimension must be 0
+    frequencies::Vector{<:Number}
+    decimation::Int64 = 1
+    monitor_data::Union{Nothing, DiffractionMonitorData} = nothing
 end
 
 # -------------------------------------------------------- #
@@ -521,7 +614,11 @@ struct HaloConnection
     axis::Int
     src_range::NTuple{3,UnitRange{Int}}
     dst_range::NTuple{3,UnitRange{Int}}
+    phase_factor::ComplexF64   # Bloch phase: 1.0 for periodic, exp(i·k·L) for Bloch
 end
+
+# Convenience constructor for real (non-Bloch) connections
+HaloConnection(src, dst, axis, sr, dr) = HaloConnection(src, dst, axis, sr, dr, ComplexF64(1.0))
 
 """
     ChunkData
@@ -578,6 +675,9 @@ end
     sources::Any
     boundaries::Union{Vector{Vector{N}},Nothing} = nothing
     absorbers::Union{Vector,Nothing} = nothing  # per-axis absorber config: [nothing, [nothing, Absorber(...)], nothing]
+    boundary_conditions::Union{Vector{Vector{BoundaryCondition}},Nothing} = nothing  # per-axis [minus, plus] BC types
+    symmetry::Tuple{Int,Int,Int} = (0, 0, 0)  # per-axis: 0=none, +1=even (PMC for E), -1=odd (PEC for E)
+    subpixel_smoothing::SubpixelSmoothing = NoSmoothing()
     geometry::Union{Vector{Object},Nothing} = nothing
     monitors::Union{Vector{Monitor},Nothing} = nothing
     num_chunks::Union{Int,Symbol,Nothing} = nothing  # nothing=single chunk, :auto, or explicit Int

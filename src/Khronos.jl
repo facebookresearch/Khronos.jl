@@ -14,6 +14,7 @@ using StaticArrays
 using MPI
 using NCCL
 import VectorModesolver
+import Interpolations
 
 macro status(exs)
     @logmsg(0, exs)
@@ -41,10 +42,14 @@ include("Memory.jl")
 include("Timestep.jl")
 include("Near2Far.jl")
 include("ModeMonitor.jl")
+include("FluxMonitor.jl")
+include("DiffractionMonitor.jl")
 include("Simulation.jl")
 include("Batch.jl")
 include("Visualization.jl")
 
 export Simulation
+export SubpixelSmoothing, NoSmoothing, VolumeAveraging, AnisotropicSmoothing
+export Periodic, Bloch, PECBoundary, PMCBoundary
 
 end

@@ -569,9 +569,40 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         wait(t)
     end
 
+    # Apply subpixel smoothing to ε_inv arrays at material interfaces
+    _apply_subpixel_smoothing!(sim, geometry, ε_inv_x, ε_inv_y, ε_inv_z)
+
     # Apply absorber conductivity profiles to σD/σB arrays
     if !isnothing(sim.absorbers)
         _apply_absorbers!(sim, σDx, σDy, σDz, σBx, σBy, σBz)
+    end
+
+    # Allocate and rasterize chi3 if any material has it
+    chi3_arr = nothing
+    if any(obj -> !isnothing(obj.material.chi3), geometry)
+        chi3_arr = zeros(backend_number, sim.Nx, sim.Ny, max(1, sim.Nz))
+        for gi in length(geometry):-1:1
+            obj = geometry[gi]
+            chi3_val = isnothing(obj.material.chi3) ? zero(backend_number) : backend_number(obj.material.chi3)
+            if chi3_val != 0
+                # Simple rasterization: paint chi3 for all voxels inside the shape
+                gv = GridVolume(sim, Center())
+                xs, ys, zs = _precompute_coords(sim, gv)
+                b = bounds(obj.shape)
+                ix_lo = max(searchsortedfirst(xs, b[1][1]), 1)
+                ix_hi = min(searchsortedlast(xs, b[2][1]), length(xs))
+                iy_lo = max(searchsortedfirst(ys, b[1][2]), 1)
+                iy_hi = min(searchsortedlast(ys, b[2][2]), length(ys))
+                iz_lo = max(searchsortedfirst(zs, b[1][3]), 1)
+                iz_hi = min(searchsortedlast(zs, b[2][3]), length(zs))
+                for iz in iz_lo:iz_hi, iy in iy_lo:iy_hi, ix in ix_lo:ix_hi
+                    point = SVector(xs[ix], ys[iy], zs[iz])
+                    if point ∈ obj.shape
+                        chi3_arr[ix, iy, iz] = chi3_val
+                    end
+                end
+            end
+        end
     end
 
     # Construct geometry data structure. Importantly, this will transfer all
@@ -588,6 +619,7 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         σBx = isnothing(σBx) ? σBx : backend_array(σBx),
         σBy = isnothing(σBy) ? σBy : backend_array(σBy),
         σBz = isnothing(σBz) ? σBz : backend_array(σBz),
+        chi3 = isnothing(chi3_arr) ? nothing : backend_array(chi3_arr),
     )
 
 end
@@ -652,12 +684,15 @@ function _apply_absorbers!(sim::SimulationData, σDx, σDy, σDz, σBx, σBy, σ
             # Auto-compute σ_max if not specified
             # Target reflection R ≈ exp(-2 * σ_max * L / (p+1)) ≈ 1e-6
             # => σ_max = -(p+1) * log(1e-6) / (2 * L)
+            # Note: σ_max is stored as a raw physical conductivity value (no Δt
+            # pre-factor) because get_σD() in the kernel already applies the
+            # 0.5*Δt scaling needed for the FDTD update equation.
             Δ = axis == 1 ? sim.Δx : (axis == 2 ? sim.Δy : sim.Δz)
             L = num_layers * Δ
             σ_max = if abs_spec.sigma_max > 0
                 abs_spec.sigma_max
             else
-                T(-(p + 1) * log(1e-6) / (2.0 * L) * 0.5 * sim.Δt)
+                T(-(p + 1) * log(1e-6) / (2.0 * L))
             end
 
             # side_idx == 1 is left (-), side_idx == 2 is right (+)
@@ -713,6 +748,202 @@ function _apply_absorbers!(sim::SimulationData, σDx, σDy, σDz, σBx, σBy, σ
                   "layers=$num_layers, σ_max=$(round(σ_max, sigdigits=4)), order=$p")
         end
     end
+end
+
+# ---------------------------------------------------------- #
+# Subpixel smoothing
+# ---------------------------------------------------------- #
+
+"""
+    _apply_subpixel_smoothing!(sim, geometry, ε_inv_x, ε_inv_y, ε_inv_z)
+
+Apply subpixel smoothing to ε_inv arrays at material interfaces.
+Called after rasterization and before absorber/GPU transfer.
+
+Supports two modes:
+- `VolumeAveraging()`: isotropic ε̄ = f·ε₁ + (1-f)·ε₂
+- `AnisotropicSmoothing()`: Farjadpour et al. 2006 anisotropic tensor
+"""
+function _apply_subpixel_smoothing!(
+    sim::SimulationData,
+    geometry::Vector{Object},
+    ε_inv_x, ε_inv_y, ε_inv_z,
+)
+    sim.subpixel_smoothing isa NoSmoothing && return
+
+    if sim.ndims != 3
+        @warn "Subpixel smoothing is currently only supported for 3D simulations"
+        return
+    end
+
+    is_anisotropic = sim.subpixel_smoothing isa AnisotropicSmoothing
+    Δx, Δy, Δz = sim.Δx, sim.Δy, sim.Δz
+
+    # E-field components: (component type, ε_inv array, comp_idx for normal projection)
+    ε_entries = (
+        (Ex(), ε_inv_x, 1),
+        (Ey(), ε_inv_y, 2),
+        (Ez(), ε_inv_z, 3),
+    )
+
+    nthreads = Threads.nthreads()
+    all_tasks = Vector{Tuple{Task, Int}}()
+
+    for (comp, ε_inv, comp_idx) in ε_entries
+        isnothing(ε_inv) && continue
+
+        gv = GridVolume(sim, comp)
+        xs, ys, zs = _precompute_coords(sim, gv)
+
+        # Truncate coordinates to match array dimensions
+        nx, ny, nz = size(ε_inv)
+        xs = xs[1:min(length(xs), nx)]
+        ys = ys[1:min(length(ys), ny)]
+        zs = zs[1:min(length(zs), nz)]
+
+        # Make a read-only copy to avoid data races at y-range boundaries
+        ε_inv_orig = copy(ε_inv)
+
+        # Split y into chunks for threading
+        nchunks = max(1, min(nthreads, ny ÷ 8))
+        chunk_size = cld(ny, nchunks)
+
+        for ch in 1:nchunks
+            iy_start = (ch - 1) * chunk_size + 1
+            iy_end = min(ch * chunk_size, ny)
+            t = Threads.@spawn _smooth_component_yrange!(
+                ε_inv, ε_inv_orig, comp_idx, xs, ys, zs,
+                Δx, Δy, Δz, geometry, is_anisotropic, iy_start, iy_end)
+            push!(all_tasks, (t, comp_idx))
+        end
+    end
+
+    # Collect results per component
+    counts = Dict{Int, Int}()
+    for (t, ci) in all_tasks
+        n = fetch(t)
+        counts[ci] = get(counts, ci, 0) + n
+    end
+
+    mode = is_anisotropic ? "anisotropic" : "volume averaging"
+    total = sum(values(counts), init=0)
+    @info("  Subpixel smoothing ($mode): smoothed $total interface voxels " *
+          "(x=$(get(counts, 1, 0)), y=$(get(counts, 2, 0)), z=$(get(counts, 3, 0)))")
+end
+
+"""
+    _smooth_component_yrange!(ε_inv, ε_inv_orig, comp_idx, xs, ys, zs,
+                               Δx, Δy, Δz, geometry, is_anisotropic, iy_start, iy_end)
+
+Smooth interface voxels in a y-range slice for one ε_inv component.
+Reads neighbor values from `ε_inv_orig` (unmodified copy) and writes to `ε_inv`.
+Returns the number of smoothed voxels.
+"""
+function _smooth_component_yrange!(
+    ε_inv::Array{T,3},
+    ε_inv_orig::Array{T,3},
+    comp_idx::Int,
+    xs::Vector{Float64}, ys::Vector{Float64}, zs::Vector{Float64},
+    Δx, Δy, Δz,
+    geometry::Vector{Object},
+    is_anisotropic::Bool,
+    iy_start::Int, iy_end::Int,
+) where {T}
+    nx, ny, nz = size(ε_inv)
+    rtol = T(1e-6)
+    half_Δ = SVector(Float64(Δx)/2, Float64(Δy)/2, Float64(Δz)/2)
+    n_smoothed = 0
+
+    for iz in 1:nz, iy in iy_start:iy_end, ix in 1:nx
+        ε_inv_c = ε_inv_orig[ix, iy, iz]
+
+        # Fast interface detection: check 6 face-sharing neighbors
+        is_interface = false
+        ε_inv_nbr = ε_inv_c
+        for (dx, dy, dz) in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1))
+            jx, jy, jz = ix+dx, iy+dy, iz+dz
+            (1 ≤ jx ≤ nx && 1 ≤ jy ≤ ny && 1 ≤ jz ≤ nz) || continue
+            nbr = ε_inv_orig[jx, jy, jz]
+            if abs(nbr - ε_inv_c) > rtol * max(abs(nbr), abs(ε_inv_c))
+                is_interface = true
+                ε_inv_nbr = nbr
+                break
+            end
+        end
+        is_interface || continue
+
+        # --- Interface voxel: compute smoothed ε_inv ---
+        p = SVector(xs[ix], ys[iy], zs[iz])
+        ε_c = Float64(one(T) / ε_inv_c)
+        ε_n = Float64(one(T) / ε_inv_nbr)
+
+        # Find closest shape surface for normal and fill fraction
+        min_dist_sq = typemax(Float64)
+        best_nout = SVector(0.0, 0.0, 1.0)
+        best_surfpt = p
+        best_shape_idx = 0
+
+        for (gi, obj) in enumerate(geometry)
+            # Quick bounding box proximity check
+            b = bounds(obj.shape)
+            min_bb_dist_sq = 0.0
+            for d in 1:3
+                if p[d] < b[1][d]
+                    min_bb_dist_sq += (b[1][d] - p[d])^2
+                elseif p[d] > b[2][d]
+                    min_bb_dist_sq += (p[d] - b[2][d])^2
+                end
+            end
+            min_bb_dist_sq ≥ min_dist_sq && continue
+
+            sp, nout = surfpt_nearby(p, obj.shape)
+            d2 = sum(abs2, sp - p)
+            if d2 < min_dist_sq
+                min_dist_sq = d2
+                best_nout = nout
+                best_surfpt = sp
+                best_shape_idx = gi
+            end
+        end
+
+        best_shape_idx == 0 && continue
+
+        # Normalize the outward normal
+        nrm = norm(best_nout)
+        n̂ = nrm > 0 ? best_nout / nrm : SVector(0.0, 0.0, 1.0)
+
+        # Compute fill fraction using volfrac from GeometryPrimitives
+        # volfrac returns the fraction of the voxel INSIDE the half-space
+        # (opposite to nout), i.e., inside the shape when nout is outward.
+        vxl = (SVector{3}(p - half_Δ), SVector{3}(p + half_Δ))
+        f_in_shape = volfrac(vxl, SVector{3}(n̂), SVector{3}(best_surfpt))
+
+        # Determine which ε is the shape material and which is the background
+        shape = geometry[best_shape_idx].shape
+        if level(p, shape) ≥ 0  # center is inside shape
+            ε_shape = ε_c
+            ε_bg = ε_n
+        else
+            ε_shape = ε_n
+            ε_bg = ε_c
+        end
+
+        # Compute averages
+        ε_avg = f_in_shape * ε_shape + (1 - f_in_shape) * ε_bg            # ⟨ε⟩
+        ε_inv_harm = f_in_shape / ε_shape + (1 - f_in_shape) / ε_bg       # ⟨ε⁻¹⟩
+
+        if is_anisotropic
+            # Farjadpour: component-dependent effective ε_inv
+            n_comp_sq = n̂[comp_idx]^2
+            @inbounds ε_inv[ix, iy, iz] = T((1 - n_comp_sq) * ε_inv_harm + n_comp_sq / ε_avg)
+        else
+            # Volume averaging: isotropic
+            @inbounds ε_inv[ix, iy, iz] = T(1.0 / ε_avg)
+        end
+        n_smoothed += 1
+    end
+
+    return n_smoothed
 end
 
 # ---------------------------------------------------------- #

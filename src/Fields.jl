@@ -133,7 +133,26 @@ function initialize_field_component_array(
     # Ghost cells are at raw indices 1 and N+2; interior at 2:(N+1).
     # Kernels use shifted indices (ix+1, iy+1, iz+1) to access interior cells.
     array_dims = get_component_voxel_count(sim, component) .+ 2
-    return KernelAbstractions.zeros(backend_engine, backend_number, array_dims...)
+    # Use complex arrays when Bloch BC is active
+    num_type = _needs_complex_fields(sim) ? complex_backend_number : backend_number
+    return KernelAbstractions.zeros(backend_engine, num_type, array_dims...)
+end
+
+"""
+    _needs_complex_fields(sim) -> Bool
+
+Check if the simulation requires complex-valued field arrays (e.g. for Bloch BC).
+"""
+function _needs_complex_fields(sim::SimulationData)
+    isnothing(sim.boundary_conditions) && return false
+    for axis_bcs in sim.boundary_conditions
+        for bc in axis_bcs
+            if bc isa Bloch
+                return true
+            end
+        end
+    end
+    return false
 end
 
 """

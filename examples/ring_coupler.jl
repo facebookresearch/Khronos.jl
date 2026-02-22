@@ -12,6 +12,8 @@
 # The coupling gap determines the coupling coefficient κ. At resonance,
 # light circulates in the ring and the through-port transmission dips.
 
+t_script_start = time()
+
 import Khronos
 using GeometryPrimitives
 using CairoMakie
@@ -596,4 +598,7 @@ println("  ring_coupler_spectra.png               — Through/drop transmission 
 println("  ring_coupler_field_intensity.png        — |Ey|² field at z=0")
 println("  ring_coupler_field_real.png            — Re(Ey) field at z=0")
 println("  ring_coupler_overlay.png               — Geometry + field overlay")
+t_script_total = time() - t_script_start
+println("  ────────────────────────────────")
+println("  Script wall time:  $(round(t_script_total, digits=2))s (includes Julia startup/JIT)")
 println("=" ^ 60)

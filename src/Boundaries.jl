@@ -73,22 +73,34 @@ function init_boundaries(sim::SimulationData, boundaries::Nothing)
 end
 
 function init_boundaries(sim::SimulationData, boundaries::Vector{Vector{T}}) where {T<:Real}
+    # Override PML thicknesses to 0 on periodic/PEC axes
+    eff_boundaries = deepcopy(sim.boundaries)
+    if !isnothing(sim.boundary_conditions)
+        for (axis, axis_bcs) in enumerate(sim.boundary_conditions)
+            for (side, bc) in enumerate(axis_bcs)
+                if bc isa Periodic || bc isa Bloch || bc isa PECBoundary || bc isa PMCBoundary
+                    eff_boundaries[axis][side] = zero(T)
+                end
+            end
+        end
+    end
+
     sim.boundary_data = BoundaryData{backend_array}(
         σBx = compute_sigma(
             sim,
             2 * sim.Nx + 1,
             sim.Δx,
             sim.Δt,
-            sim.boundaries[1][1],
-            sim.boundaries[1][2],
+            eff_boundaries[1][1],
+            eff_boundaries[1][2],
         ),
         σBy = compute_sigma(
             sim,
             2 * sim.Ny + 1,
             sim.Δy,
             sim.Δt,
-            sim.boundaries[2][1],
-            sim.boundaries[2][2],
+            eff_boundaries[2][1],
+            eff_boundaries[2][2],
         ),
         σBz = (sim.ndims > 2) ?
               compute_sigma(
@@ -96,24 +108,24 @@ function init_boundaries(sim::SimulationData, boundaries::Vector{Vector{T}}) whe
             2 * sim.Nz + 1,
             sim.Δz,
             sim.Δt,
-            sim.boundaries[3][1],
-            sim.boundaries[3][2],
+            eff_boundaries[3][1],
+            eff_boundaries[3][2],
         ) : nothing,
         σDx = compute_sigma(
             sim,
             2 * sim.Nx + 1,
             sim.Δx,
             sim.Δt,
-            sim.boundaries[1][1],
-            sim.boundaries[1][2],
+            eff_boundaries[1][1],
+            eff_boundaries[1][2],
         ),
         σDy = compute_sigma(
             sim,
             2 * sim.Ny + 1,
             sim.Δy,
             sim.Δt,
-            sim.boundaries[2][1],
-            sim.boundaries[2][2],
+            eff_boundaries[2][1],
+            eff_boundaries[2][2],
         ),
         σDz = (sim.ndims > 2) ?
               compute_sigma(

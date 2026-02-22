@@ -115,7 +115,33 @@ function init_monitors(sim::SimulationData, monitor::TimeMonitor)
     return monitor.monitor_data
 end
 
-#TODO add update and kernel functions for time monitor.
+# Time monitor update: record field value at each timestep
+function update_monitor(sim::SimulationData, monitor::TimeMonitorData, time::Real)
+    idx = monitor.time_index[1]
+    idx > size(monitor.fields, 1) && return  # buffer full
+
+    # Get the field array for this component
+    field = get_fields_from_component(sim, monitor.component)
+    isnothing(field) && return
+
+    gv = monitor.gv
+    # Read the field value from the GPU at the monitor location
+    # For a point monitor, gv.Nx = gv.Ny = gv.Nz = 1
+    # P.5: field arrays have +1 offset for ghost cells
+    for iz in 1:gv.Nz, iy in 1:gv.Ny, ix in 1:gv.Nx
+        fx = ix + gv.start_idx[1]
+        fy = iy + gv.start_idx[2]
+        fz = iz + gv.start_idx[3]
+        val = Array(field[fx:fx, fy:fy, fz:fz])[1]
+        if sim.ndims == 2
+            monitor.fields[idx, ix, iy] = val
+        else
+            monitor.fields[idx, ix, iy, iz] = val
+        end
+    end
+
+    monitor.time_index[1] = idx + 1
+end
 
 # ------------------------------------------------------------ #
 # DFT Monitor
@@ -377,6 +403,40 @@ function init_monitors(sim::SimulationData, monitor::ModeMonitor)
         else
             md.h2_base = collect(base)
         end
+    end
+
+    return md
+end
+
+# ------------------------------------------------------------ #
+# Flux Monitor
+# ------------------------------------------------------------ #
+
+function init_monitors(sim::SimulationData, monitor::FluxMonitor)
+    md = init_flux_monitor(sim, monitor)
+
+    for dft_mon in md.tangential_E_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+    for dft_mon in md.tangential_H_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+
+    return md
+end
+
+# ------------------------------------------------------------ #
+# Diffraction Monitor
+# ------------------------------------------------------------ #
+
+function init_monitors(sim::SimulationData, monitor::DiffractionMonitor)
+    md = init_diffraction_monitor(sim, monitor)
+
+    for dft_mon in md.tangential_E_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
+    end
+    for dft_mon in md.tangential_H_monitors
+        push!(sim.monitor_data, init_monitors(sim, dft_mon))
     end
 
     return md
