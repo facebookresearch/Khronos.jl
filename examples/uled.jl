@@ -84,8 +84,8 @@ const resolution = 40  # pixels/μm (adjust for speed vs accuracy)
 function build_geometry()
     objects = Khronos.Object[]
 
-    # Painter's algorithm: LATER objects override EARLIER ones.
-    # Background layers first (silver, SiO2, Al2O3), then nGaN, then mesa
+    # Khronos uses findfirst priority: EARLIER objects override LATER ones.
+    # So specific mesa layers go first, background slabs go last.
     # internals last. This matches Tidy3D's structure ordering.
 
     # Silver material for reflector and contact
@@ -207,7 +207,10 @@ function build_geometry()
         material = ag_mat,
     ))
 
-    return objects
+    # Reverse: Khronos findfirst gives priority to earlier objects.
+    # The list was built tidy3d-style (background first, specific last),
+    # so reverse to put specific mesa layers first (highest priority).
+    return reverse(objects)
 end
 
 # ================================================================== #
