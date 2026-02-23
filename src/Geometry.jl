@@ -353,7 +353,7 @@ end
 function _precompute_coords(sim::SimulationData, gv::GridVolume)
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
-    Δx, Δy, Δz = sim.Δx, sim.Δy, sim.Δz
+    Δx, Δy, Δz = _scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)
     xs = [origin[1] + (ix + gv_origin[1] - 2) * Δx for ix = 1:gv.Nx]
     ys = [origin[2] + (iy + gv_origin[2] - 2) * Δy for iy = 1:gv.Ny]
     pz_base = origin[3] + (gv_origin[3] - 2) * Δz
@@ -363,6 +363,37 @@ function _precompute_coords(sim::SimulationData, gv::GridVolume)
         zs[iz] = (isinf(pz_raw) || isnan(pz_raw)) ? sim.cell_center[3] : pz_raw
     end
     return xs, ys, zs
+end
+
+# Coordinate builders: uniform (scalar Δ) vs non-uniform (vector Δ)
+function _build_coords(Δ::Real, origin, gv_offset, N; default_val=nothing)
+    coords = Vector{Float64}(undef, N)
+    for i in 1:N
+        val = origin + (i + gv_offset - 2) * Δ
+        coords[i] = (!isnothing(default_val) && (isinf(val) || isnan(val))) ? default_val : val
+    end
+    return coords
+end
+
+function _build_coords(Δ::AbstractVector, origin, gv_offset, N; default_val=nothing)
+    # For non-uniform grids, compute cumulative position from spacing vector
+    # Δ[k] = spacing of cell k. Position of cell index i = origin + sum(Δ[1:i+offset-2])
+    coords = Vector{Float64}(undef, N)
+    cumpos = 0.0
+    start_idx = gv_offset - 1  # first cell index (0-based in the spacing array)
+    for i in 1:N
+        cell_idx = i + gv_offset - 2  # 0-based global cell index
+        if cell_idx <= 0
+            cumpos = cell_idx * (length(Δ) > 0 ? Δ[1] : 0.0)
+        elseif cell_idx <= length(Δ)
+            cumpos = sum(Δ[1:cell_idx])
+        else
+            cumpos = sum(Δ) + (cell_idx - length(Δ)) * Δ[end]
+        end
+        val = origin + cumpos
+        coords[i] = (!isnothing(default_val) && (isinf(val) || isnan(val))) ? default_val : val
+    end
+    return coords
 end
 
 function _write_geometry_3d!(
@@ -1110,10 +1141,10 @@ function init_polarization!(sim::SimulationData)
     origin = get_component_origin(sim, Ex())
     gv_origin = get_min_corner(gv_ref)
 
-    xs = [origin[1] + (ix + gv_origin[1] - 2) * sim.Δx for ix in 1:gv_ref.Nx]
-    ys = [origin[2] + (iy + gv_origin[2] - 2) * sim.Δy for iy in 1:gv_ref.Ny]
+    xs = _build_coords(sim.Δx, origin[1], gv_origin[1], gv_ref.Nx)
+    ys = _build_coords(sim.Δy, origin[2], gv_origin[2], gv_ref.Ny)
     zs = if sim.ndims == 3
-        [origin[3] + (iz + gv_origin[3] - 2) * sim.Δz for iz in 1:gv_ref.Nz]
+        _build_coords(sim.Δz, origin[3], gv_origin[3], gv_ref.Nz)
     else
         [0.0]
     end

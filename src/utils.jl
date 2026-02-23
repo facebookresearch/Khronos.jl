@@ -1,5 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+# Grid spacing helper: extract a representative scalar from uniform or non-uniform spacing
+@inline _scalar_spacing(Δ::Real) = Δ
+@inline _scalar_spacing(Δ::AbstractVector) = length(Δ) > 0 ? Δ[1] : 0.0
+
 """
     get_direction_index(direction)
 
@@ -59,7 +63,7 @@ function point_from_grid_index(
     gv::GridVolume,
     idx_point::Vector{<:Real},
 )
-    Δ = [sim.Δx, sim.Δy, sim.Δz]
+    Δ = [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
     return origin .+ (gv_origin .+ idx_point - [1, 1, 1]) .* Δ
@@ -124,14 +128,14 @@ Make sure the simulation is prepared first...
 """
 get_yee_shift(sim::SimulationData, ::Center) = SVector(0.0, 0.0, 0.0)
 get_yee_shift(sim::SimulationData, ::Union{Dx,Ex,εx}) =
-    SVector(0.0, -sim.Δy / 2, -sim.Δz / 2)
+    SVector(0.0, -_scalar_spacing(sim.Δy) / 2, -_scalar_spacing(sim.Δz) / 2)
 get_yee_shift(sim::SimulationData, ::Union{Dy,Ey,εy}) =
-    SVector(-sim.Δx / 2.0, 0.0, -sim.Δz / 2.0)
+    SVector(-_scalar_spacing(sim.Δx) / 2.0, 0.0, -_scalar_spacing(sim.Δz) / 2.0)
 get_yee_shift(sim::SimulationData, ::Union{Dz,Ez,εz}) =
-    SVector(-sim.Δx / 2.0, -sim.Δy / 2.0, 0.0)
-get_yee_shift(sim::SimulationData, ::Union{Bx,Hx,μx}) = SVector(-sim.Δx / 2.0, 0.0, 0.0)
-get_yee_shift(sim::SimulationData, ::Union{By,Hy,μy}) = SVector(0.0, -sim.Δy / 2, 0.0)
-get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = SVector(0.0, 0.0, -sim.Δz / 2.0)
+    SVector(-_scalar_spacing(sim.Δx) / 2.0, -_scalar_spacing(sim.Δy) / 2.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Bx,Hx,μx}) = SVector(-_scalar_spacing(sim.Δx) / 2.0, 0.0, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{By,Hy,μy}) = SVector(0.0, -_scalar_spacing(sim.Δy) / 2, 0.0)
+get_yee_shift(sim::SimulationData, ::Union{Bz,Hz,μz}) = SVector(0.0, 0.0, -_scalar_spacing(sim.Δz) / 2.0)
 
 """get_component_origin()
 
@@ -145,9 +149,9 @@ voxels are in the domain.
 
 function get_component_origin(sim::SimulationData)
     return SVector(
-        sim.cell_center[1] - sim.cell_size[1] / 2 + sim.Δx / 2,
-        sim.cell_center[2] - sim.cell_size[2] / 2 + sim.Δy / 2,
-        sim.cell_center[3] - sim.cell_size[3] / 2 + sim.Δz / 2,
+        sim.cell_center[1] - sim.cell_size[1] / 2 + _scalar_spacing(sim.Δx) / 2,
+        sim.cell_center[2] - sim.cell_size[2] / 2 + _scalar_spacing(sim.Δy) / 2,
+        sim.cell_center[3] - sim.cell_size[3] / 2 + _scalar_spacing(sim.Δz) / 2,
     )
 end
 
@@ -160,10 +164,10 @@ end
 Get the grid index of a point nearest a real location (no rounding)
 """
 function get_grid_idx(sim::SimulationData, point::Vector{<:Real}, component::Field)
-    Δ = [sim.Δx, sim.Δy, sim.Δz]
+    Δ = [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
 
     sim_vol = Volume(center = sim.cell_center, size = sim.cell_size)
-    corner_to_center = [sim.Δx, sim.Δy, sim.Δz] ./ 2
+    corner_to_center = Δ ./ 2
     min_corner = get_min_corner(sim_vol) + corner_to_center + get_yee_shift(sim, component)
     max_corner = get_max_corner(sim_vol) - corner_to_center - get_yee_shift(sim, component)
 
@@ -214,7 +218,7 @@ function grid_volume_idx_to_point(sim::SimulationData, gv::GridVolume, idx_point
     # Our current convention, combined with Julia's 1-based indexing, means
     # we need to compensate by `2`, not just `1` like we ould expect. We should
     # revisit this, as it's prone to errors in the future...
-    offset = (idx_point + gv_origin .- 2) .* [sim.Δx, sim.Δy, sim.Δz]
+    offset = (idx_point + gv_origin .- 2) .* [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
     point = collect(origin) .+ offset
     # note that if our simulation is 2D, we will get a 0×∞ op, resulting in a
     # NaN. We need to account for that manually (*sigh*). The point we choose to
@@ -239,9 +243,9 @@ separate integer indices, returning an `SVector{3,Float64}`.
 )
     origin = get_component_origin(sim, gv.component)
     gv_origin = get_min_corner(gv)
-    Δx = sim.Δx
-    Δy = sim.Δy
-    Δz = sim.Δz
+    Δx = _scalar_spacing(sim.Δx)
+    Δy = _scalar_spacing(sim.Δy)
+    Δz = _scalar_spacing(sim.Δz)
     px = origin[1] + (ix + gv_origin[1] - 2) * Δx
     py = origin[2] + (iy + gv_origin[2] - 2) * Δy
     pz_raw = origin[3] + (iz + gv_origin[3] - 2) * Δz
@@ -255,7 +259,7 @@ end
 Return the point in real coordinates that corresponds to a simulation voxel index.
 """
 @inline function sim_idx_to_point(sim::SimulationData, idx_point::Vector{<:Real})
-    Δ = [sim.Δx, sim.Δy, sim.Δz]
+    Δ = [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
     return get_component_origin(sim) .+ (idx_point - [1, 1, 1]) .* Δ
 end
 

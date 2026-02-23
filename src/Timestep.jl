@@ -129,6 +129,9 @@ get_step_boundaries(sim) = (sim.Nx, sim.Ny, sim.Nz)
 _fields_are_complex(sim) = !isnothing(sim.chunk_data) && !isempty(sim.chunk_data) &&
     !isnothing(sim.chunk_data[1].fields.fEx) && eltype(sim.chunk_data[1].fields.fEx) <: Complex
 
+# Check if grid is uniform (scalar spacing) — raw CUDA kernels require this
+_grid_is_uniform(sim) = sim.Δx isa Real && sim.Δy isa Real && (sim.ndims <= 2 || sim.Δz isa Real)
+
 function step_B_from_E!(sim::SimulationData)
     curl_B_kernel = sim._cached_curl_kernel
     idx_curl = 1
@@ -756,15 +759,16 @@ function step_H_fused!(sim::SimulationData)
 
     cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
     use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
-    dt_dx = sim.Δt / sim.Δx
-    dt_dy = sim.Δt / sim.Δy
-    dt_dz = sim.Δt / sim.Δz
+    # Precompute dt/dx ratios (only valid for uniform grids, used by raw CUDA paths)
+    dt_dx = _grid_is_uniform(sim) ? sim.Δt / sim.Δx : zero(sim.Δt)
+    dt_dy = _grid_is_uniform(sim) ? sim.Δt / sim.Δy : zero(sim.Δt)
+    dt_dz = _grid_is_uniform(sim) ? sim.Δt / sim.Δz : zero(sim.Δt)
 
     for chunk in sim.chunk_data
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
             # Raw CUDA path: scalar μ, B eliminated — H_new = H_old + μ⁻¹·Δt·curl(E)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
@@ -789,7 +793,7 @@ function step_H_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_B && g.μ_inv isa Real && f.fPBx isa Nothing
             # Raw CUDA PML path: fused curl+update, no material σ, no polarizability
             # Note: safe to use when has_sources && !sa because source arrays are zero after termination
@@ -856,15 +860,15 @@ function step_E_fused!(sim::SimulationData)
 
     cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
     use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
-    dt_dx = sim.Δt / sim.Δx
-    dt_dy = sim.Δt / sim.Δy
-    dt_dz = sim.Δt / sim.Δz
+    dt_dx = _grid_is_uniform(sim) ? sim.Δt / sim.Δx : zero(sim.Δt)
+    dt_dy = _grid_is_uniform(sim) ? sim.Δt / sim.Δy : zero(sim.Δt)
+    dt_dz = _grid_is_uniform(sim) ? sim.Δt / sim.Δz : zero(sim.Δt)
 
     for chunk in sim.chunk_data
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA path: per-voxel ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
             # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
@@ -875,7 +879,7 @@ function step_E_fused!(sim::SimulationData)
                 g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
                 iNx)
-        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
+        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA path: scalar ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
             # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
@@ -901,7 +905,7 @@ function step_E_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_D && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA PML path: per-voxel ε, fused curl+update
             pf = chunk.spec.physics
@@ -926,7 +930,7 @@ function step_E_fused!(sim::SimulationData)
                 g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
                 backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
                 iNx, pml_x, pml_y, pml_z)
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_D && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA PML path: scalar ε, fused curl+update
             pf = chunk.spec.physics
@@ -1491,12 +1495,17 @@ end
 @inline get_σD(σD::Nothing, idx_array, Δt) = nothing
 @inline get_σD(σD, idx_array, Δt) = scale_by_half(Δt * σD[idx_array])
 
+# Grid spacing dispatch: uniform (scalar) vs non-uniform (vector)
+# Julia compiles separate specializations for each — zero overhead for uniform.
+@inline get_inv_dx(Δ::Real, i) = inv(Δ)
+@inline get_inv_dx(Δ::AbstractVector, i) = inv(Δ[i])
+
 @inline d_dx!(A, Δx, idx_curl, ix, iy, iz) =
-    inv(Δx) * (A[ix+idx_curl, iy, iz] - A[ix, iy, iz])
+    get_inv_dx(Δx, ix) * (A[ix+idx_curl, iy, iz] - A[ix, iy, iz])
 @inline d_dy!(A, Δy, idx_curl, ix, iy, iz) =
-    inv(Δy) * (A[ix, iy+idx_curl, iz] - A[ix, iy, iz])
+    get_inv_dx(Δy, iy) * (A[ix, iy+idx_curl, iz] - A[ix, iy, iz])
 @inline d_dz!(A, Δz, idx_curl, ix, iy, iz) =
-    inv(Δz) * (A[ix, iy, iz+idx_curl] - A[ix, iy, iz])
+    get_inv_dx(Δz, iz) * (A[ix, iy, iz+idx_curl] - A[ix, iy, iz])
 
 @inline curl_x!(Ay, Az, Δy, Δz, idx_curl, ix, iy, iz) =
     d_dz!(Ay, Δz, idx_curl, ix, iy, iz) - d_dy!(Az, Δy, idx_curl, ix, iy, iz)

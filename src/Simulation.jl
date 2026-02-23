@@ -70,6 +70,12 @@ function prepare_simulation!(sim::SimulationData)
         @info("Preparing simulation object ($(sim.Nx)×$(sim.Ny)×$(sim.Nz) = $(num_voxels) voxels)...")
     end
 
+    # Log non-uniform grid info (before GPU transfer)
+    if sim.Δx isa AbstractVector && (!is_distributed() || is_root())
+        @info("  Non-uniform grid: Δx has $(length(sim.Δx)) cells, " *
+              "min=$(round(minimum(sim.Δx), sigdigits=4)), max=$(round(maximum(sim.Δx), sigdigits=4))")
+    end
+
     t_start = time()
 
     # prepare geometry
@@ -184,6 +190,18 @@ function prepare_simulation!(sim::SimulationData)
     end
 
     sim.is_prepared = true
+
+    # Transfer non-uniform grid spacing vectors to GPU for kernel use
+    # (must happen after all CPU-side geometry/boundary setup is complete)
+    if sim.Δx isa AbstractVector && !(sim.Δx isa backend_array)
+        sim.Δx = backend_array(backend_number.(sim.Δx))
+    end
+    if sim.Δy isa AbstractVector && !(sim.Δy isa backend_array)
+        sim.Δy = backend_array(backend_number.(sim.Δy))
+    end
+    if sim.Δz isa AbstractVector && sim.ndims > 2 && !(sim.Δz isa backend_array)
+        sim.Δz = backend_array(backend_number.(sim.Δz))
+    end
 
     # P.2: Cache kernel objects to avoid repeated construction from non-const global
     wg = parse(Int, get(ENV, "KHRONOS_WORKGROUP_SIZE", "64"))

@@ -24,8 +24,8 @@ function sigma_helper(idx, N, Δx, Δt, length_left, length_right)
     u0(pml_length) = -log(1e-15) / (4 * pml_length * 1 / 3) * (0.5 * Δt)
     u(x) = x^2 * 0.5 * (sign(x) + 1)
 
-    total_length = N * Δx / 2 # remember Δx is voxel width, but we have 2 σ's/voxel...
-    real_idx = idx * Δx / 2 # transform idx to position
+    total_length = _pml_total_length(N, Δx)
+    real_idx = _pml_position(idx, Δx)
 
     if real_idx < length_left
         return backend_number(u0(length_left) * u((length_left - real_idx) / length_left))
@@ -35,6 +35,30 @@ function sigma_helper(idx, N, Δx, Δt, length_left, length_right)
     else
         return zero(backend_number)
     end
+end
+
+# PML position mapping: uniform vs non-uniform grid
+@inline _pml_total_length(N, Δx::Real) = N * Δx / 2
+@inline _pml_position(idx, Δx::Real) = idx * Δx / 2
+
+function _pml_total_length(N, Δx::AbstractVector)
+    # Total physical length covered by N sigma samples (2 per voxel)
+    n_cells = div(N, 2)
+    n_cells <= length(Δx) ? sum(Δx[1:n_cells]) : sum(Δx)
+end
+
+function _pml_position(idx, Δx::AbstractVector)
+    # Physical position of sigma index idx (2 sigma samples per voxel)
+    cell = div(idx, 2)
+    frac = (idx % 2) * 0.5
+    pos = 0.0
+    for k in 1:min(cell, length(Δx))
+        pos += Δx[k]
+    end
+    if cell < length(Δx)
+        pos += frac * Δx[min(cell + 1, length(Δx))]
+    end
+    return pos
 end
 
 function compute_sigma(sim, N, Δx, Δt, length_left, length_right)

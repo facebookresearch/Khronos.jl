@@ -173,7 +173,7 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
 
     wx = Vector{Float64}(undef, gv.Nx)
     for ix in 1:gv.Nx
-        px = origin[1] + (ix + gv_origin[1] - 2) * sim.Δx
+        px = origin[1] + (ix + gv_origin[1] - 2) * _scalar_spacing(sim.Δx)
         p = SVector(px, 0.0, 0.0)
         lo = SVector(min_corner[1], 0.0, 0.0)
         hi = SVector(max_corner[1], 0.0, 0.0)
@@ -184,7 +184,7 @@ function init_monitors(sim::SimulationData, monitor::DFTMonitor)
 
     wy = Vector{Float64}(undef, gv.Ny)
     for iy in 1:gv.Ny
-        py = origin[2] + (iy + gv_origin[2] - 2) * sim.Δy
+        py = origin[2] + (iy + gv_origin[2] - 2) * _scalar_spacing(sim.Δy)
         p = SVector(py, 0.0, 0.0)
         lo = SVector(min_corner[2], 0.0, 0.0)
         hi = SVector(max_corner[2], 0.0, 0.0)

@@ -51,9 +51,9 @@ function assemble_sources(sim::SimulationData, source::Source)
     min_corner = SVector{3}(get_min_corner(src_volume)...)
     max_corner = SVector{3}(get_max_corner(src_volume)...)
     vol_size = SVector{3}(src_volume.size...)
-    Δx = isnothing(sim.Δx) ? 0.0 : Float64(sim.Δx)
-    Δy = isnothing(sim.Δy) ? 0.0 : Float64(sim.Δy)
-    Δz = isnothing(sim.Δz) ? 0.0 : Float64(sim.Δz)
+    Δx = isnothing(sim.Δx) ? 0.0 : Float64(_scalar_spacing(sim.Δx))
+    Δy = isnothing(sim.Δy) ? 0.0 : Float64(_scalar_spacing(sim.Δy))
+    Δz = isnothing(sim.Δz) ? 0.0 : Float64(_scalar_spacing(sim.Δz))
     Δ = SVector{3}(Δx, Δy, Δz)
     ndims = sim.ndims::Int
 

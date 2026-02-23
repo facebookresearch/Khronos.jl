@@ -114,7 +114,7 @@ function _pml_overlaps_chunk_axis(sim::SimulationData, chunk_gv::GridVolume, axi
     (pml_left == 0.0 && pml_right == 0.0) && return false
 
     # Get grid spacings and domain sizes
-    Δ = [sim.Δx, sim.Δy, sim.Δz]
+    Δ = [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
     N_grid = [sim.Nx, sim.Ny, sim.Nz]
 
     # PML occupies voxels at the domain edges

@@ -644,6 +644,10 @@ end
 
 # -------------------------------------------------------- #
 
+# Grid spacing dispatch for CFL computation
+@inline _min_Δ(Δ::Real) = Δ
+@inline _min_Δ(Δ::AbstractVector) = minimum(Δ)
+
 function get_Nz(cell_size, resolution)
     if size(cell_size)[1] < 3
         return 0
@@ -687,10 +691,10 @@ end
     Nz::Union{Int,Nothing} = get_Nz(cell_size, resolution)
     is_prepared::Bool = false
     Courant::N = 0.5
-    Δx::Union{Vector{N},N,Nothing} = N.(cell_size[1] / (Nx))
-    Δy::Union{Vector{N},N,Nothing} = N.(cell_size[2] / (Ny))
-    Δz::Union{Vector{N},N,Nothing} = N.(get_Δz(cell_size, Nz))
-    Δt::Union{N,Nothing} = minimum((Δx, Δy, Δz)) * Courant
+    Δx::Union{AbstractVector,N,Nothing} = N.(cell_size[1] / (Nx))
+    Δy::Union{AbstractVector,N,Nothing} = N.(cell_size[2] / (Ny))
+    Δz::Union{AbstractVector,N,Nothing} = N.(get_Δz(cell_size, Nz))
+    Δt::Union{N,Nothing} = minimum((_min_Δ(Δx), _min_Δ(Δy), _min_Δ(Δz))) * Courant
     ndims::Int = (Nz == 0) ? 2 : 3
     dimensionality::Type{<:Dimension} = ThreeD
 
