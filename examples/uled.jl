@@ -66,7 +66,7 @@ const dpml = 0.5   # PML thickness in μm
 const n2f_margin = 0.5  # margin between n2f surface edge and PML (μm)
 const sim_xy = 2 * dpml + 2 * n2f_margin + 3.0  # lateral: dpml + margin + 3μm physical + margin + dpml
 const sim_z_min = -1.7   # cell bottom (margin below structures for PML)
-const sim_z_max = 1.5    # cell top; ends inside nGaN (no GaN/air interface, matching Tidy3D)
+const sim_z_max = 2.5    # cell top; extends above nGaN/air interface (t_nGaN=1.0) with buffer for N2F + PML
 const sim_z = sim_z_max - sim_z_min
 const sim_center_z = (sim_z_min + sim_z_max) / 2
 const n2f_xy = sim_xy - 2 * dpml - 2 * n2f_margin  # n2f surface lateral size (3.0 μm)
@@ -158,12 +158,12 @@ function build_geometry()
     ))
 
     # --- 4. nGaN (slab + mesa cylinder — overrides silver/SiO2/Al2O3 inside mesa) ---
-    # Extend nGaN slab to fill entire upper domain including PML,
-    # so there's no GaN/air interface (matching Tidy3D setup).
-    nGaN_height = sim_z_max  # extends from z=0 to z=sim_z_max (fills upper PML)
-    nGaN_slab_center_z = nGaN_height / 2
+    # nGaN slab extends from z=0 to z=t_nGaN, with GaN/air interface at z=t_nGaN.
+    # The N2F monitor is placed above this interface in air to see the full
+    # refraction/TIR at the GaN/air boundary.
+    nGaN_slab_center_z = t_nGaN / 2
     push!(objects, Khronos.Object(
-        shape = Cuboid([0.0, 0.0, nGaN_slab_center_z], [sim_xy, sim_xy, nGaN_height]),
+        shape = Cuboid([0.0, 0.0, nGaN_slab_center_z], [sim_xy, sim_xy, t_nGaN]),
         material = Khronos.Material(ε = n_nGaN^2),
     ))
 
@@ -234,10 +234,9 @@ function make_sim(dipole_x::Float64, pol::Symbol; geometry=nothing)
         ),
     ]
 
-    # Near2Far monitor inside nGaN slab (matching Tidy3D placement).
-    # Tidy3D ends the domain inside nGaN and projects through the GaN medium,
-    # so the monitor sees fields before the GaN/air interface.
-    n2f_z = lda0 / 8  # λ₀/8 above nGaN base (inside nGaN, matching Tidy3D)
+    # Near2Far monitor ABOVE the nGaN/air interface, in the air region.
+    # This captures only the light that escapes the semiconductor (after TIR).
+    n2f_z = t_nGaN + lda0 / 4  # λ₀/4 above the GaN/air interface
     n2f_monitor = Khronos.Near2FarMonitor(
         center = [0.0, 0.0, n2f_z],
         size = [n2f_xy, n2f_xy, 0.0],
@@ -245,7 +244,7 @@ function make_sim(dipole_x::Float64, pol::Symbol; geometry=nothing)
         theta = collect(range(0.0, π / 2, length = 91)),  # 0-90 degrees, 1-degree steps
         phi = collect(range(0.0, 2π - 2π/72, length = 72)),  # 72 azimuthal points
         normal_dir = :+,
-        medium_eps = n_nGaN^2,  # project through nGaN medium (matching Tidy3D)
+        medium_eps = 1.0,  # project through air (monitor is above GaN/air interface)
     )
 
     # Field DFT monitor in xz-plane (for visualization)
@@ -432,7 +431,7 @@ for dipole_x in dipole_x_list
     for pol in pol_list
         component = pol == :Ex ? Khronos.Ex() : Khronos.Ey()
 
-        n2f_z = lda0 / 8  # inside nGaN (matching Tidy3D)
+        n2f_z = t_nGaN + lda0 / 4  # above GaN/air interface, in air
         config = (
             sources = [
                 Khronos.UniformSource(
@@ -451,7 +450,7 @@ for dipole_x in dipole_x_list
                     theta = collect(range(0.0, π / 2, length = 91)),
                     phi = collect(range(0.0, 2π - 2π / 72, length = 72)),
                     normal_dir = :+,
-                    medium_eps = n_nGaN^2,  # project through nGaN medium
+                    medium_eps = 1.0,  # project through air (above GaN/air interface)
                 ),
                 Khronos.DFTMonitor(
                     component = component,
@@ -581,18 +580,15 @@ end
 
 println("Used $n_valid / $(length(results)) valid simulations")
 
-# LEE at various cone half-angles (angles measured in GaN medium)
-# Since medium_eps = n_nGaN², the far-field angles θ are in-medium angles.
-# Snell’s law: n_nGaN*sin(θ_GaN) = sin(θ_air)
-# Critical angle in GaN: arcsin(1/n_nGaN) ≈ 24.1° — light beyond this is TIR.
+# LEE at various cone half-angles (angles measured in air)
+# Since medium_eps = 1.0 (air), the far-field angles θ are in air.
+# The N2F monitor is above the GaN/air interface, so TIR is already accounted for.
 lee_15 = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
     cone_half_angle = deg2rad(15.0))
 lee_30 = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
     cone_half_angle = deg2rad(30.0))
-# Critical angle: all light within this cone escapes into air
-theta_crit = asin(1.0 / n_nGaN)  # ≈ 24.1°
-lee_crit = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
-    cone_half_angle = theta_crit)
+lee_45 = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
+    cone_half_angle = deg2rad(45.0))
 # Full hemisphere
 lee_full = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
     cone_half_angle = π / 2)
@@ -600,13 +596,12 @@ lee_full = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
 println("\n", "=" ^ 60)
 println("Light Extraction Efficiency Results")
 println("=" ^ 60)
-println("  Note: angles are in GaN medium (n=$n_nGaN), not air")
-println("  Critical angle (TIR): $(round(rad2deg(theta_crit), digits=1))°")
+println("  Note: angles are in air (N2F monitor above GaN/air interface)")
 println()
-println("  LEE (±15° GaN): $(round(100 * lee_15, digits=2))%")
-println("  LEE (±24° GaN / escape cone): $(round(100 * lee_crit, digits=2))%")
-println("  LEE (±30° GaN): $(round(100 * lee_30, digits=2))%")
-println("  LEE (full hemisphere):   $(round(100 * lee_full, digits=2))%")
+println("  LEE (±15° air): $(round(100 * lee_15, digits=2))%")
+println("  LEE (±30° air): $(round(100 * lee_30, digits=2))%")
+println("  LEE (±45° air): $(round(100 * lee_45, digits=2))%")
+println("  LEE (full hemisphere): $(round(100 * lee_full, digits=2))%")
 println("=" ^ 60)
 
 # ================================================================== #
@@ -643,15 +638,15 @@ power_avg = mean(total_power, dims=2)  # average over phi
 # --- 1D line plot: power vs theta (averaged over phi) ---
 fig_line = Figure(size = (700, 400))
 ax_line = Axis(fig_line[1, 1],
-    title = "Radiated power vs polar angle in GaN (azimuthally averaged)",
-    xlabel = "Polar angle θ in GaN (degrees)",
+    title = "Radiated power vs polar angle in air (azimuthally averaged)",
+    xlabel = "Polar angle θ in air (degrees)",
     ylabel = "Power (a.u.)",
 )
 
 lines!(ax_line, theta_deg, vec(power_avg), color = :red, linewidth = 2)
 vlines!(ax_line, [15.0], color = :blue, linestyle = :dash, label = "15° cone")
-vlines!(ax_line, [rad2deg(theta_crit)], color = :orange, linestyle = :dashdot, label = "critical angle ($(round(rad2deg(theta_crit),digits=1))°)")
-vlines!(ax_line, [30.0], color = :green, linestyle = :dash, label = "30° cone")
+vlines!(ax_line, [30.0], color = :orange, linestyle = :dashdot, label = "30° cone")
+vlines!(ax_line, [45.0], color = :green, linestyle = :dash, label = "45° cone")
 axislegend(ax_line, position = :rt)
 
 save("uled_power_vs_angle.png", fig_line)
