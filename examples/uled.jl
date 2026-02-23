@@ -467,12 +467,12 @@ template_kwargs = (
 )
 
 t_batch_start = time()
-results = Khronos.run_batch(configs;
+results = Khronos.run_batch_concurrent(configs;
     template_kwargs = template_kwargs,
     until_after_sources = Khronos.stop_when_dft_decayed(
         tolerance = 1e-6, minimum_runtime = 20.0, maximum_runtime = 200.0))
 t_batch = time() - t_batch_start
-println("Batch sweep completed in $(round(t_batch, digits=1))s")
+println("Concurrent batch sweep completed in $(round(t_batch, digits=1))s")
 
 # ================================================================== #
 # 4. Show field patterns for a few selected dipoles

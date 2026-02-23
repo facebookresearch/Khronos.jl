@@ -4,7 +4,7 @@
 # Runs multiple independent FDTD simulations that share geometry but differ
 # in source configuration, then sums far-field power incoherently.
 
-export run_batch, plan_batch, compute_incoherent_LEE
+export run_batch, run_batch_concurrent, plan_batch, compute_incoherent_LEE
 
 # ------------------------------------------------------------------- #
 # Memory planning
@@ -142,6 +142,124 @@ function run_batch(sim_configs::Vector;
     end
 
     return results
+end
+
+# ------------------------------------------------------------------- #
+# Concurrent batch execution (multi-stream GPU)
+# ------------------------------------------------------------------- #
+
+"""
+    run_batch_concurrent(sim_configs; template_kwargs, until_after_sources,
+                         max_concurrent=0) -> Vector
+
+Run multiple simulations **concurrently** on a single GPU using CUDA
+multi-stream execution. Each simulation runs in its own Julia task,
+which maps to a separate CUDA stream. The GPU scheduler overlaps
+kernel execution across streams, maximizing SM utilization.
+
+Geometry arrays are shared (read-only, allocated once). Field arrays
+are allocated per-simulation. Simulations are processed in waves if
+total memory exceeds GPU capacity.
+
+# Arguments
+- `sim_configs`: Vector of NamedTuples with per-sim overrides (sources, monitors)
+- `template_kwargs`: Shared simulation parameters (cell_size, geometry, etc.)
+- `until_after_sources`: Convergence criterion or time limit
+- `max_concurrent`: Max sims per wave (0 = auto from GPU memory)
+"""
+function run_batch_concurrent(sim_configs::Vector;
+                               template_kwargs::NamedTuple = NamedTuple(),
+                               until=nothing,
+                               until_after_sources=nothing,
+                               max_concurrent::Int=0)
+    n_sims = length(sim_configs)
+
+    # Determine concurrency level from GPU memory
+    if max_concurrent <= 0
+        # Estimate per-sim memory from template
+        est_sim = Simulation(; template_kwargs..., sim_configs[1]...)
+        plan = plan_batch(est_sim, n_sims)
+        max_concurrent = plan.max_batch
+        if !is_distributed() || is_root()
+            @info("Concurrent batch: $(n_sims) sims, max_concurrent=$(max_concurrent) " *
+                  "(per_sim=$(round(plan.per_sim_bytes / 1e9, digits=2)) GB, " *
+                  "GPU=$(round(plan.gpu_memory / 1e9, digits=1)) GB)")
+        end
+    end
+
+    # Disable CUDA Graph capture for concurrent mode (graphs are per-stream
+    # and would conflict; stream-level concurrency provides the parallelism)
+    old_cuda_graphs = get(ENV, "KHRONOS_CUDA_GRAPHS", "1")
+    ENV["KHRONOS_CUDA_GRAPHS"] = "0"
+
+    all_results = Vector{Any}(undef, n_sims)
+
+    try
+        for wave_start in 1:max_concurrent:n_sims
+            wave_end = min(wave_start + max_concurrent - 1, n_sims)
+            wave_size = wave_end - wave_start + 1
+
+            if !is_distributed() || is_root()
+                @info("Wave $(cld(wave_start, max_concurrent)): sims $(wave_start)-$(wave_end) ($(wave_size) concurrent)")
+            end
+
+            # Prepare all simulations in this wave
+            sims = Vector{SimulationData}(undef, wave_size)
+            for (j, i) in enumerate(wave_start:wave_end)
+                sim_kwargs = merge(template_kwargs, sim_configs[i])
+                sims[j] = Simulation(; sim_kwargs...)
+                prepare_simulation!(sims[j])
+            end
+
+            # Launch all concurrently via Julia tasks
+            # Each task gets its own CUDA stream (CUDA.jl per-task stream binding)
+            t_wave_start = time()
+            tasks = map(sims) do sim
+                Threads.@spawn begin
+                    if !isnothing(until)
+                        run(sim; until=until)
+                    elseif !isnothing(until_after_sources)
+                        run(sim; until_after_sources=until_after_sources)
+                    end
+                end
+            end
+
+            # Wait for all tasks in this wave
+            for t in tasks
+                fetch(t)
+            end
+
+            t_wave = time() - t_wave_start
+            if !is_distributed() || is_root()
+                total_steps = sum(s.timestep for s in sims)
+                total_voxels = sims[1].Nx * sims[1].Ny * sims[1].Nz
+                agg_rate = total_voxels * total_steps / t_wave / 1e6
+                @info("  Wave complete: $(round(t_wave, digits=1))s, " *
+                      "aggregate $(round(agg_rate, digits=0)) MVoxels/s")
+            end
+
+            # Collect results
+            for (j, i) in enumerate(wave_start:wave_end)
+                all_results[i] = (
+                    monitor_data = deepcopy(sims[j].monitor_data),
+                    monitors = sims[j].monitors,
+                )
+            end
+
+            # Free GPU memory for next wave
+            for sim in sims
+                sim.fields = nothing
+                sim.chunk_data = nothing
+                sim.geometry_data = nothing
+            end
+            GC.gc(false)
+        end
+    finally
+        # Restore CUDA Graph setting
+        ENV["KHRONOS_CUDA_GRAPHS"] = old_cuda_graphs
+    end
+
+    return all_results
 end
 
 # ------------------------------------------------------------------- #
