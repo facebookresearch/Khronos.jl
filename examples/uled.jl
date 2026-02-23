@@ -356,7 +356,7 @@ println("  2D field size: ", size(field_2d), ", max abs: ", maximum(abs.(field_2
 
 fig_field = Figure(size = (800, 600))
 ax_field = Axis(fig_field[1, 1],
-    title = "Ey field pattern — dipole at x=$(round(3*mesa_radius/4, digits=3)) μm",
+    title = "|Ey|² field intensity — dipole at x=$(round(3*mesa_radius/4, digits=3)) μm",
     xlabel = "x (μm)",
     ylabel = "z (μm)",
     aspect = DataAspect(),
@@ -366,14 +366,16 @@ nfx, nfz = size(field_2d)
 fx_range = range(-sim_xy / 2 + dpml, sim_xy / 2 - dpml, length = nfx)
 fz_range = range(sim_z_min + dpml, sim_z_max - dpml, length = nfz)
 
-vmax = maximum(abs.(field_2d))
-vmax = vmax > 0 ? vmax : 1.0  # guard against degenerate range
-hm_f = heatmap!(ax_field, collect(fx_range), collect(fz_range), Float32.(field_2d),
-    colormap = :bluesreds,
-    colorrange = (-vmax, vmax),
+field_intensity = abs2.(field_2d)
+vmax = maximum(field_intensity)
+vmax = vmax > 0 ? vmax : 1.0
+# Cap colorrange at 5% of max to reveal wave propagation beyond the dipole singularity
+hm_f = heatmap!(ax_field, collect(fx_range), collect(fz_range), Float32.(field_intensity),
+    colormap = :inferno,
+    colorrange = (0.0, 0.05 * vmax),
 )
 try
-    Colorbar(fig_field[1, 2], hm_f, label = "Re(Ey)")
+    Colorbar(fig_field[1, 2], hm_f, label = "|Ey|²")
 catch e
     @warn "Colorbar creation failed ($(typeof(e))); skipping"
 end
@@ -397,12 +399,14 @@ else
     ax_ff = PolarAxis(fig_ff_single[1, 1],
         title = "Far-field power — single dipole (Ey, x=0.375 μm)",
         rlimits = (0, 90),
-        rticks = [0, 15, 30, 45, 60, 75, 90],
+        rticklabelsvisible = false,
+        rgridvisible = true,
     )
     theta_deg = rad2deg.(theta_arr)
     pmax = maximum(power_single)
     if pmax > 0
-        surface!(ax_ff, phi_arr, theta_deg, power_single',
+        # Use heatmap for proper polar wrapping (surface! leaves gaps)
+        heatmap!(ax_ff, phi_arr, theta_deg, power_single',
             colormap = :hot,
         )
     end
@@ -504,11 +508,11 @@ for (col, (idx, label)) in enumerate(zip(selected_indices, selected_labels))
     end
     field_data = Array(Khronos.get_dft_fields(mon2)[:, :, :, 1])
     if size(field_data, 2) == 1
-        field_slice = real(field_data[:, 1, :])
+        field_slice = abs2.(field_data[:, 1, :])
     elseif size(field_data, 1) == 1
-        field_slice = real(field_data[1, :, :])
+        field_slice = abs2.(field_data[1, :, :])
     else
-        field_slice = real(field_data[:, 1, :])
+        field_slice = abs2.(field_data[:, 1, :])
     end
 
     local nfx, nfz = size(field_slice)
@@ -521,10 +525,10 @@ for (col, (idx, label)) in enumerate(zip(selected_indices, selected_labels))
         ylabel = col == 1 ? "z (μm)" : "",
         aspect = DataAspect(),
     )
-    local vmax = maximum(abs.(field_slice))
+    local vmax = maximum(field_slice)
     vmax = vmax > 0 ? vmax : 1.0
-    heatmap!(ax, collect(fx_range), collect(fz_range), field_slice,
-        colormap = :bluesreds, colorrange = (-vmax, vmax))
+    heatmap!(ax, collect(fx_range), collect(fz_range), Float32.(field_slice),
+        colormap = :inferno, colorrange = (0.0, 0.05 * vmax))
 end
 
 save("uled_field_patterns_batch.png", fig_fields)
@@ -618,13 +622,14 @@ fig_ff = Figure(size = (600, 600))
 ax_polar = PolarAxis(fig_ff[1, 1],
     title = "Far-field power — incoherent sum (10 dipoles)",
     rlimits = (0, 90),
-    rticks = [0, 15, 30, 45, 60, 75, 90],
+    rticklabelsvisible = false,
+    rgridvisible = true,
 )
 
 theta_deg = rad2deg.(theta_arr)
 pmax_total = maximum(total_power)
 if pmax_total > 0
-    surface!(ax_polar, phi_arr, theta_deg, total_power',
+    heatmap!(ax_polar, phi_arr, theta_deg, total_power',
         colormap = :hot,
     )
 end
