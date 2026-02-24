@@ -15,6 +15,7 @@ using MPI
 using NCCL
 import VectorModesolver
 import Interpolations
+import FFTW
 
 macro status(exs)
     @logmsg(0, exs)

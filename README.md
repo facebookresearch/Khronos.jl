@@ -15,6 +15,9 @@ Khronos is a GPU-accelerated Maxwell FDTD solver written entirely in Julia.
 - _Equivalent_ sources from predefined electric and magnetic fields (e.g. to inject modes computed from a mode solver).
 - Continuous-wave and Guassian-pulse time profiles
 - Arbitrary 1D, 2D, or 3D (rectilinear) DFT monitors
+- Near-to-far field transformation with GPU-accelerated Green's function evaluation
+- Layered-medium far-field projection via transfer matrix method (e.g. project from inside GaN to air without simulating the air region)
+- Dispersive materials via Drude and Lorentzian susceptibility poles
 - Perfectly matched layer (PML) absorbing boundaries
 - Predefined simulation runtime functions, including run for an arbitray time and run until the DFT fields have converged.
 - Simple plotting of visualization cross sections and overlayed field response, DFT monitors, and source frequency responses.
@@ -25,7 +28,6 @@ Khronos is a GPU-accelerated Maxwell FDTD solver written entirely in Julia.
 
 - All simulations require PML.
 - Single GPU only.
-- Only linear materials without any polarizabilities.
 - Uniform gridding.
 
 ## License

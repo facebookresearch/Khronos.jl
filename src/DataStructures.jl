@@ -360,6 +360,40 @@ end
 # -------------------------------------------------------- #
 
 """
+    LayerSpec
+
+A single dielectric layer in a planar stack for layered near-to-far projection.
+
+Fields:
+- `z_min`: bottom z-coordinate of the layer
+- `z_max`: top z-coordinate of the layer
+- `eps`: relative permittivity
+- `mu`: relative permeability (default 1.0)
+"""
+struct LayerSpec
+    z_min::Float64
+    z_max::Float64
+    eps::Float64
+    mu::Float64
+end
+LayerSpec(z_min, z_max, eps; mu=1.0) = LayerSpec(z_min, z_max, eps, mu)
+
+"""
+    LayerStack
+
+Ordered stack of dielectric layers for layered near-to-far field projection.
+Layers should be ordered from bottom to top.
+
+When attached to a `Near2FarMonitor`, far-field projection uses the transfer
+matrix method to account for Fresnel reflection/transmission at every interface,
+enabling correct far-field computation even when the monitor is inside a
+high-index medium (e.g., GaN) and the observation is in air.
+"""
+struct LayerStack
+    layers::Vector{LayerSpec}
+end
+
+"""
     Near2FarMonitorData
 
 Internal data structure for near-to-far field computation. Stores references
@@ -387,6 +421,7 @@ to the 4 tangential DFT monitors (2 E + 2 H) and observation point info.
     e2_base::Vector{Float64} = Float64[]
     h1_base::Vector{Float64} = Float64[]
     h2_base::Vector{Float64} = Float64[]
+    layer_stack::Union{Nothing, LayerStack} = nothing
 end
 
 """
@@ -398,6 +433,10 @@ far-field radiation patterns via the surface equivalence principle.
 Two modes:
 1. Angular mode: specify `theta`/`phi` arrays → far-field at distance `r`
 2. Point mode: specify `observation_points` (Nx3 matrix) → full Green's function
+
+When `layer_stack` is provided, the far-field projection uses the transfer matrix
+method to propagate through the layer stack (e.g., from GaN into air), enabling
+correct far-field projection without simulating the air region in FDTD.
 """
 @with_kw mutable struct Near2FarMonitor <: Monitor
     center::Vector{<:Number}
@@ -411,6 +450,7 @@ Two modes:
     medium_eps::Float64 = 1.0
     medium_mu::Float64 = 1.0
     decimation::Int64 = 1
+    layer_stack::Union{Nothing, LayerStack} = nothing
     monitor_data::Union{Nothing, Near2FarMonitorData} = nothing
 end
 

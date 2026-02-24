@@ -63,13 +63,24 @@ const z_dipole = -t_1 - t_MQW / 2  # ≈ -0.525 μm
 
 # Simulation domain
 const dpml = 0.5   # PML thickness in μm
-const n2f_margin = 0.5  # margin between n2f surface edge and PML (μm)
-const sim_xy = 2 * dpml + 2 * n2f_margin + 3.0  # lateral: dpml + margin + 3μm physical + margin + dpml
+const n2f_margin = 0.0  # margin between n2f surface edge and PML (μm)
+                         # 0 = span full physical domain (matching Tidy3D's td.inf monitor)
+const sim_xy = 2 * dpml + 4.0  # lateral: 4 μm physical + 2×dpml (matching Tidy3D's ±2 μm domain)
 const sim_z_min = -1.7   # cell bottom (margin below structures for PML)
-const sim_z_max = 2.5    # cell top; extends above nGaN/air interface (t_nGaN=1.0) with buffer for N2F + PML
+const sim_z_max = 0.8    # cell top; PML must be INSIDE nGaN slab (no GaN/air interface)
+                          # Physical domain top = 0.8 - 0.5 = 0.3, matching Tidy3D tutorial.
+                          # The layered projection handles the GaN/air interface analytically.
 const sim_z = sim_z_max - sim_z_min
 const sim_center_z = (sim_z_min + sim_z_max) / 2
 const n2f_xy = sim_xy - 2 * dpml - 2 * n2f_margin  # n2f surface lateral size (3.0 μm)
+
+# Layer stack for layered far-field projection (GaN → air)
+# The N2F monitor is placed inside the nGaN slab; the transfer matrix method
+# handles Fresnel transmission/TIR at the GaN/air interface automatically.
+const layer_stack = Khronos.LayerStack([
+    Khronos.LayerSpec(-Inf, t_nGaN, n_nGaN^2),  # GaN (semi-infinite below, up to nGaN top)
+    Khronos.LayerSpec(t_nGaN, Inf, 1.0),          # Air (semi-infinite above)
+])
 
 # Resolution — Tidy3D uses 15 pts/wavelength
 # lda_in_material = lda0/n_max ≈ 450nm/2.6 ≈ 173 nm
@@ -158,9 +169,9 @@ function build_geometry()
     ))
 
     # --- 4. nGaN (slab + mesa cylinder — overrides silver/SiO2/Al2O3 inside mesa) ---
-    # nGaN slab extends from z=0 to z=t_nGaN, with GaN/air interface at z=t_nGaN.
-    # The N2F monitor is placed above this interface in air to see the full
-    # refraction/TIR at the GaN/air boundary.
+    # nGaN slab extends from z=0 to z=t_nGaN.
+    # The N2F monitor is placed inside this slab and uses the layered projection
+    # (transfer matrix method) to project through the GaN/air interface.
     nGaN_slab_center_z = t_nGaN / 2
     push!(objects, Khronos.Object(
         shape = Cuboid([0.0, 0.0, nGaN_slab_center_z], [sim_xy, sim_xy, t_nGaN]),
@@ -234,9 +245,9 @@ function make_sim(dipole_x::Float64, pol::Symbol; geometry=nothing)
         ),
     ]
 
-    # Near2Far monitor ABOVE the nGaN/air interface, in the air region.
-    # This captures only the light that escapes the semiconductor (after TIR).
-    n2f_z = t_nGaN + lda0 / 4  # λ₀/4 above the GaN/air interface
+    # Near2Far monitor INSIDE the nGaN slab, with layered projection to air.
+    # The transfer matrix method handles GaN/air Fresnel transmission and TIR.
+    n2f_z = lda0 / 8  # λ₀/8 above z=0 (inside nGaN slab)
     n2f_monitor = Khronos.Near2FarMonitor(
         center = [0.0, 0.0, n2f_z],
         size = [n2f_xy, n2f_xy, 0.0],
@@ -244,7 +255,8 @@ function make_sim(dipole_x::Float64, pol::Symbol; geometry=nothing)
         theta = collect(range(0.0, π / 2, length = 91)),  # 0-90 degrees, 1-degree steps
         phi = collect(range(0.0, 2π - 2π/72, length = 72)),  # 72 azimuthal points
         normal_dir = :+,
-        medium_eps = 1.0,  # project through air (monitor is above GaN/air interface)
+        medium_eps = n_nGaN^2,  # monitor is inside GaN
+        layer_stack = layer_stack,
     )
 
     # Field DFT monitor in xz-plane (for visualization)
@@ -343,15 +355,15 @@ end
 field_dft = Array(field_dft_raw[:, :, :, 1])
 # The monitor is an xz-plane (y-size=0), so it should be (Nx, 1, Nz) or similar
 if size(field_dft, 2) == 1
-    field_2d = real(field_dft[:, 1, :])
+    field_2d = field_dft[:, 1, :]
 elseif size(field_dft, 1) == 1
-    field_2d = real(field_dft[1, :, :])
+    field_2d = field_dft[1, :, :]
 elseif size(field_dft, 3) == 1
-    field_2d = real(field_dft[:, :, 1])
+    field_2d = field_dft[:, :, 1]
 else
-    field_2d = real(field_dft[:, 1, :])
+    field_2d = field_dft[:, 1, :]
 end
-println("  2D field size: ", size(field_2d), ", max abs: ", maximum(abs.(field_2d)))
+println("  2D field size: ", size(field_2d), ", max |E|²: ", maximum(abs2.(field_2d)))
 
 fig_field = Figure(size = (800, 600))
 ax_field = Axis(fig_field[1, 1],
@@ -366,18 +378,14 @@ fx_range = range(-sim_xy / 2 + dpml, sim_xy / 2 - dpml, length = nfx)
 fz_range = range(sim_z_min + dpml, sim_z_max - dpml, length = nfz)
 
 field_intensity = abs2.(field_2d)
-vmax = maximum(field_intensity)
-vmax = vmax > 0 ? vmax : 1.0
-# Cap colorrange at 5% of max to reveal wave propagation beyond the dipole singularity
-hm_f = heatmap!(ax_field, collect(fx_range), collect(fz_range), Float32.(field_intensity),
+log_intensity = log10.(field_intensity .+ 1e-30)
+log_max = maximum(log_intensity)
+# Show 10 decades from peak — enough to reveal wave propagation in the mesa
+hm_f = heatmap!(ax_field, collect(fx_range), collect(fz_range), Float32.(log_intensity),
     colormap = :inferno,
-    colorrange = (0.0, 0.05 * vmax),
+    colorrange = (log_max - 10, log_max),
 )
-try
-    Colorbar(fig_field[1, 2], hm_f, label = "|Ey|²")
-catch e
-    @warn "Colorbar creation failed ($(typeof(e))); skipping"
-end
+Colorbar(fig_field[1, 2], hm_f, label = "log₁₀(|Ey|²)")
 
 save("uled_field_pattern_single.png", fig_field)
 println("Saved: uled_field_pattern_single.png")
@@ -404,8 +412,10 @@ else
     theta_deg = rad2deg.(theta_arr)
     pmax = maximum(power_single)
     if pmax > 0
-        # Use heatmap for proper polar wrapping (surface! leaves gaps)
-        heatmap!(ax_ff, phi_arr, theta_deg, power_single',
+        # Wrap phi to close the gap at 360°→0°
+        phi_plot = vcat(phi_arr, 2π)
+        power_plot = hcat(power_single, power_single[:, 1])
+        heatmap!(ax_ff, phi_plot, theta_deg, power_plot',
             colormap = :hot,
         )
     end
@@ -431,7 +441,7 @@ for dipole_x in dipole_x_list
     for pol in pol_list
         component = pol == :Ex ? Khronos.Ex() : Khronos.Ey()
 
-        n2f_z = t_nGaN + lda0 / 4  # above GaN/air interface, in air
+        n2f_z = lda0 / 8  # inside nGaN slab, using layered projection
         config = (
             sources = [
                 Khronos.UniformSource(
@@ -450,7 +460,8 @@ for dipole_x in dipole_x_list
                     theta = collect(range(0.0, π / 2, length = 91)),
                     phi = collect(range(0.0, 2π - 2π / 72, length = 72)),
                     normal_dir = :+,
-                    medium_eps = 1.0,  # project through air (above GaN/air interface)
+                    medium_eps = n_nGaN^2,  # monitor is inside GaN
+                    layer_stack = layer_stack,
                 ),
                 Khronos.DFTMonitor(
                     component = component,
@@ -496,7 +507,8 @@ selected_labels = [
     "x=0.5μm, pol=Ex",
 ]
 
-fig_fields = Figure(size = (1200, 400))
+fig_fields = Figure(size = (1400, 400))
+hm_batch = nothing
 for (col, (idx, label)) in enumerate(zip(selected_indices, selected_labels))
     r = results[idx]
     # Field monitor is the second monitor in each config
@@ -524,10 +536,14 @@ for (col, (idx, label)) in enumerate(zip(selected_indices, selected_labels))
         ylabel = col == 1 ? "z (μm)" : "",
         aspect = DataAspect(),
     )
-    local vmax = maximum(field_slice)
-    vmax = vmax > 0 ? vmax : 1.0
-    heatmap!(ax, collect(fx_range), collect(fz_range), Float32.(field_slice),
-        colormap = :inferno, colorrange = (0.0, 0.05 * vmax))
+    # Log scale — 10 decades from peak to reveal wave propagation
+    local log_slice = log10.(field_slice .+ 1e-30)
+    local log_max = maximum(log_slice)
+    global hm_batch = heatmap!(ax, collect(fx_range), collect(fz_range), Float32.(log_slice),
+        colormap = :inferno, colorrange = (log_max - 10, log_max))
+end
+if !isnothing(hm_batch)
+    Colorbar(fig_fields[1, 4], hm_batch, label = "log₁₀(|E|²)")
 end
 
 save("uled_field_patterns_batch.png", fig_fields)
@@ -580,9 +596,16 @@ end
 
 println("Used $n_valid / $(length(results)) valid simulations")
 
+# Azimuthally average to enforce the circular symmetry of the mesa.
+# Dipoles are sampled along x only; the structure is rotationally symmetric,
+# so the correct incoherent sum from all positions on the MQW disc is
+# ∫₀²π P(θ,φ-α) dα = 2π·<P>_φ, which is azimuthally symmetric.
+power_avg_phi = mean(total_power, dims=2)  # (n_theta, 1)
+total_power .= power_avg_phi  # broadcast back — LEE integrals are unchanged
+
 # LEE at various cone half-angles (angles measured in air)
-# Since medium_eps = 1.0 (air), the far-field angles θ are in air.
-# The N2F monitor is above the GaN/air interface, so TIR is already accounted for.
+# The N2F monitor is inside GaN; the layered projection (transfer matrix)
+# handles Fresnel transmission and TIR at the GaN/air interface.
 lee_15 = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
     cone_half_angle = deg2rad(15.0))
 lee_30 = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
@@ -594,14 +617,73 @@ lee_full = Khronos.compute_LEE(total_power, theta_arr, phi_arr;
     cone_half_angle = π / 2)
 
 println("\n", "=" ^ 60)
-println("Light Extraction Efficiency Results")
+println("Light Extraction Efficiency Results (air angles)")
 println("=" ^ 60)
-println("  Note: angles are in air (N2F monitor above GaN/air interface)")
+println("  Note: angles are in air (layered projection from GaN through GaN/air interface)")
 println()
 println("  LEE (±15° air): $(round(100 * lee_15, digits=2))%")
 println("  LEE (±30° air): $(round(100 * lee_30, digits=2))%")
 println("  LEE (±45° air): $(round(100 * lee_45, digits=2))%")
 println("  LEE (full hemisphere): $(round(100 * lee_full, digits=2))%")
+println("=" ^ 60)
+
+# ================================================================== #
+# 5b. Internal consistency: FFT vs Green's function in homogeneous GaN
+# ================================================================== #
+# Verify that the FFT-based and Green's function projection methods agree
+# when projecting in homogeneous GaN (no layer interfaces).
+# These give GaN-angle LEE (~77%), which is physically correct: in GaN
+# (n=2.45), the 4 μm aperture is ~21.8 wavelengths, producing a narrow
+# beam that concentrates power near the normal.
+
+println("\n  Consistency check: FFT vs Green's function in homogeneous GaN...")
+
+# Method A: FFT-based, single-layer GaN (no interfaces → t_TE = t_TM = 1)
+gan_only_stack = Khronos.LayerStack([
+    Khronos.LayerSpec(-Inf, Inf, n_nGaN^2),  # single infinite GaN layer
+])
+
+total_power_GaN_fft = zeros(length(theta_arr), length(phi_arr))
+total_power_GaN_green = zeros(length(theta_arr), length(phi_arr))
+
+for (i, r) in enumerate(results)
+    mon = r.monitors[1]
+    if !(mon isa Khronos.Near2FarMonitor) || isnothing(mon.monitor_data)
+        continue
+    end
+    md = mon.monitor_data
+
+    # Method A: FFT with GaN-only layer stack
+    saved_ls = md.layer_stack
+    md.layer_stack = gan_only_stack
+
+    far_field_GaN_fft = Khronos.compute_far_field(md)
+    power_GaN_fft = Khronos.compute_far_field_power(far_field_GaN_fft, theta_arr, phi_arr;
+        eps = n_nGaN^2, mu = 1.0)
+    total_power_GaN_fft .+= power_GaN_fft
+
+    # Method B: Green's function (no layer stack)
+    md.layer_stack = nothing
+    far_field_GaN_green = Khronos.compute_far_field(md)
+    power_GaN_green = Khronos.compute_far_field_power(far_field_GaN_green, theta_arr, phi_arr;
+        eps = Float64(md.medium_eps), mu = Float64(md.medium_mu))
+    total_power_GaN_green .+= power_GaN_green
+
+    # Restore
+    md.layer_stack = saved_ls
+end
+
+lee_15_fft = Khronos.compute_LEE(total_power_GaN_fft, theta_arr, phi_arr;
+    cone_half_angle = deg2rad(15.0))
+lee_15_green = Khronos.compute_LEE(total_power_GaN_green, theta_arr, phi_arr;
+    cone_half_angle = deg2rad(15.0))
+
+println("\n", "=" ^ 60)
+println("Internal Consistency: GaN-angle LEE (FFT vs Green's function)")
+println("=" ^ 60)
+println("  FFT (GaN-only layer):   LEE ±15° = $(round(100 * lee_15_fft, digits=2))%")
+println("  Green's function:       LEE ±15° = $(round(100 * lee_15_green, digits=2))%")
+println("  (Both should agree; ~77% is expected for 4 μm aperture in GaN)")
 println("=" ^ 60)
 
 # ================================================================== #
@@ -624,7 +706,10 @@ ax_polar = PolarAxis(fig_ff[1, 1],
 theta_deg = rad2deg.(theta_arr)
 pmax_total = maximum(total_power)
 if pmax_total > 0
-    heatmap!(ax_polar, phi_arr, theta_deg, total_power',
+    # Wrap phi to close the gap at 360°→0°
+    phi_plot = vcat(phi_arr, 2π)
+    power_plot = hcat(total_power, total_power[:, 1])
+    heatmap!(ax_polar, phi_plot, theta_deg, power_plot',
         colormap = :hot,
     )
 end

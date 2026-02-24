@@ -18,5 +18,6 @@ using Test
     include("test_batch.jl")
     include("test_mode_monitor.jl")
     include("test_absorber.jl")
+    include("test_subpixel.jl")
 
 end
