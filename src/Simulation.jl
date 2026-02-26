@@ -126,10 +126,8 @@ function prepare_simulation!(sim::SimulationData)
     end
 
     # prepare fields
-    # In distributed mode, skip allocating full-domain arrays — they are never
-    # used at runtime (stepping operates on per-chunk fields). This saves
-    # N_voxels × ~13 arrays × sizeof(T) of GPU memory (e.g., 132 GB for a
-    # 2.5B-voxel simulation).
+    # In distributed mode or multi-chunk, skip allocating full-domain arrays —
+    # stepping operates on per-chunk fields allocated by create_all_chunks.
     if !is_distributed() && sim.chunk_plan.total_chunks == 1
         init_fields(sim, sim.dimensionality)
     end
@@ -160,6 +158,13 @@ function prepare_simulation!(sim::SimulationData)
     # (only for CUDA backend — HaloCopyOp uses CuPtr)
     if !is_distributed() && !(backend_engine isa CPU)
         precompute_halo_ops!(sim)
+    end
+
+    # Multi-stream setup: create per-chunk CUDA streams for concurrent kernel dispatch
+    if backend_engine isa CUDABackend && length(sim.chunk_data) > 1 &&
+       get(ENV, "KHRONOS_MULTI_STREAM", "1") == "1"
+        sim._chunk_streams = [CUDA.CuStream(; flags=CUDA.STREAM_NON_BLOCKING) for _ in 1:length(sim.chunk_data)]
+        sim._use_multi_stream = true
     end
 
     # Allocate MPI staging buffers for cross-rank halo exchange
@@ -329,7 +334,20 @@ end
     maximum_runtime::Real = Inf,
 )::Function
 
-TBW
+Return a callback for use with `run(sim, until_after_sources = ...)` that stops
+the simulation when all DFT monitors have converged.
+
+Convergence is evaluated **per DFT monitor**: each monitor independently tracks
+its step-to-step norm change relative to the largest change it has ever seen.
+The simulation stops only when every monitor that has received significant signal
+reports `rel_change <= tolerance`.
+
+# Arguments
+- `tolerance`: relative change threshold (default `1e-6`).
+- `minimum_runtime`: simulation time (in natural units) before convergence
+  checks begin.  Set this to at least the light travel time from the source
+  to the farthest monitor.
+- `maximum_runtime`: hard upper bound on simulation time.
 """
 function stop_when_dft_decayed(;
     tolerance::Real = 1e-6,
@@ -343,7 +361,9 @@ function stop_when_dft_decayed(;
         )
     end
 
-    closure = Dict("previous_fields" => 0.0, "t0" => 0.0, "dt" => 0.0, "maxchange" => 0.0)
+    # Per-monitor convergence state.
+    # Each entry stores (prev_norm, maxchange) for one DFT monitor.
+    monitor_state = Dict{Int, Tuple{Float64, Float64}}()
 
     function _stop(sim::SimulationData)::Bool
         if round_time(sim) < minimum_runtime
@@ -355,29 +375,51 @@ function stop_when_dft_decayed(;
             return true
         end
 
-        # TODO
-        # if round_time(sim) <= closure["dt"] + closure["t0"]
-        #     return false
-        # end
+        all_converged = true
+        n_active = 0  # monitors that have seen real signal
 
-        previous_fields = closure["previous_fields"]
-        current_fields = dft_fields_norm(sim)
-        change = abs(previous_fields - current_fields)
-        closure["maxchange"] = max(closure["maxchange"], change)
+        for (i, md) in enumerate(sim.monitor_data)
+            # Only DFT monitors contribute (ModeMonitorData, FluxMonitorData etc.
+            # return 0.0 from the fallback dispatch — their internal DFT sub-monitors
+            # are pushed into sim.monitor_data separately).
+            current_norm = dft_fields_norm(md)
+            current_norm == 0.0 && continue
 
-        if previous_fields == 0.0
-            closure["previous_fields"] = current_fields
+            if !haskey(monitor_state, i)
+                # First time seeing this monitor — record initial norm,
+                # don't allow convergence yet.
+                monitor_state[i] = (current_norm, 0.0)
+                all_converged = false
+                continue
+            end
+
+            prev_norm, maxchange = monitor_state[i]
+            change = abs(current_norm - prev_norm)
+            maxchange = max(maxchange, change)
+            monitor_state[i] = (current_norm, maxchange)
+
+            if maxchange == 0.0
+                # Haven't seen any change yet — not converged.
+                all_converged = false
+                continue
+            end
+
+            n_active += 1
+            rel_change = change / maxchange
+
+            if rel_change > tolerance
+                all_converged = false
+            end
+        end
+
+        # Don't stop if no monitors have seen signal yet.
+        if n_active == 0
             return false
         end
 
-        closure["previous_fields"] = current_fields
-        closure["t0"] = sim.timestep
+        @verbose("DFT fields decay: $n_active active monitors, all_converged=$all_converged")
 
-        rel_change = (change / closure["maxchange"])
-
-        @verbose("DFT fields decay()")
-
-        return rel_change <= tolerance
+        return all_converged
     end
 
     return _stop

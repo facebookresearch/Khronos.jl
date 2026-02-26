@@ -887,7 +887,8 @@ using GeometryPrimitives
         @test isnothing(interior_chunk.boundary_data.σDy)
         @test isnothing(interior_chunk.boundary_data.σDz)
 
-        # Face-X chunk: σBx/σDx should be arrays, σBy/σBz/σDy/σDz should be nothing
+        # Face-X chunk: σBx/σDx should have non-zero PML values,
+        # σBy/σBz/σDy/σDz should be zero-filled arrays (for σ-skipping fast path)
         face_x_idx = findfirst(c ->
             c.spec.physics.has_pml_x && !c.spec.physics.has_pml_y && !c.spec.physics.has_pml_z,
             sim.chunk_data)
@@ -895,9 +896,14 @@ using GeometryPrimitives
         face_x_chunk = sim.chunk_data[face_x_idx]
         @test !isnothing(face_x_chunk.boundary_data.σBx)
         @test !isnothing(face_x_chunk.boundary_data.σDx)
-        @test isnothing(face_x_chunk.boundary_data.σBy)
-        @test isnothing(face_x_chunk.boundary_data.σBz)
-        @test isnothing(face_x_chunk.boundary_data.σDy)
-        @test isnothing(face_x_chunk.boundary_data.σDz)
+        @test !isnothing(face_x_chunk.boundary_data.σBy)
+        @test !isnothing(face_x_chunk.boundary_data.σBz)
+        @test !isnothing(face_x_chunk.boundary_data.σDy)
+        @test !isnothing(face_x_chunk.boundary_data.σDz)
+        # Non-PML axes should be all zeros
+        @test all(Array(face_x_chunk.boundary_data.σBy) .== 0)
+        @test all(Array(face_x_chunk.boundary_data.σBz) .== 0)
+        @test all(Array(face_x_chunk.boundary_data.σDy) .== 0)
+        @test all(Array(face_x_chunk.boundary_data.σDz) .== 0)
     end
 end

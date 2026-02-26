@@ -470,6 +470,9 @@ Configuration for the mode solver used by ModeMonitor.
     mode_solver_resolution::Int = 50
     solver_tolerance::Float64 = 1e-6
     num_mode_freqs::Int = 5   # coarse frequency points for mode interpolation (0 = solve every freq)
+    mode_group::Symbol = :auto  # cache grouping — monitors with the same mode_group share mode solves
+                                # :auto (default) = key by monitor center (safe, one solve per position)
+                                # any other Symbol (e.g. :wg1) = all monitors with that symbol share
 end
 
 """
@@ -771,6 +774,10 @@ end
     # CUDA Graph replay for post-source steady-state stepping
     _cuda_graph_exec_H::Any = nothing  # CuGraphExec for H half-step (curl B + update H + halo)
     _cuda_graph_exec_E::Any = nothing  # CuGraphExec for E half-step (curl D + update E + halo)
+
+    # Multi-stream concurrent chunk dispatch
+    _chunk_streams::Vector{Any} = Any[]
+    _use_multi_stream::Bool = false
 end
 
 # Convenience wrapper

@@ -97,6 +97,10 @@ function _try_capture_graphs!(sim::SimulationData)
     get(ENV, "KHRONOS_CUDA_GRAPHS", "1") == "0" && return false
     # Disable for complex fields (Bloch BC) — graph capture assumes fixed types
     _fields_are_complex(sim) && return false
+    # Disable graph capture when multi-stream is active — standard capture
+    # doesn't support cross-stream operations without STREAM_CAPTURE_MODE_RELAXED.
+    # The per-component kernel speedup compensates for lack of graph replay.
+    sim._use_multi_stream && return false
 
     try
         graph_H = CUDA.capture(; throw_error=false) do
@@ -735,6 +739,361 @@ function _cuda_pml_DE_scalar_kernel!(
     return nothing
 end
 
+# ------------------------------------------------------------------- #
+# Per-component raw CUDA PML kernels with σ-skipping
+#
+# Each kernel processes ONE field component with fused curl→U→B/D→W→H/E.
+# This reduces register pressure from ~50-60 (3-component) to ~20-25 per
+# kernel, eliminating register spilling and improving occupancy.
+#
+# σ-skipping: when all 3 σ values are zero (interior voxels, 35-90% of
+# domain), the kernel skips U/W auxiliary reads/writes entirely, reducing
+# memory traffic from 312 to ~150-200 bytes/voxel/step.
+#
+# PML direction table (X component shown; Y, Z follow cyclic permutation):
+#   X: curl from Ey,Ez; U uses σ_y; T uses σ_z; W/H uses σ_x
+#   Y: curl from Ez,Ex; U uses σ_z; T uses σ_x; W/H uses σ_y
+#   Z: curl from Ex,Ey; U uses σ_x; T uses σ_y; W/H uses σ_z
+# ------------------------------------------------------------------- #
+
+# Helper for scalar vs per-voxel material property access
+@inline _get_m(m::Real, ix, iy, iz) = m
+@inline _get_m(m::AbstractArray, ix, iy, iz) = m[ix, iy, iz]
+
+# ==================== BH per-component kernels ====================
+
+function _cuda_pml_BH_x_kernel!(
+    Ey, Ez,                          # 2 source E (read, stencil)
+    Bx, Hx,                         # target B, output H (read/write)
+    UBx, WBx,                       # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays (always valid, zero-filled if no PML)
+    m_inv,                           # scalar μ⁻¹
+    dt_dy, dt_dz,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(m_inv)
+    _zero = zero(m_inv)
+
+    @inbounds begin
+        # Forward curl_x(E) = dEy/dz - dEz/dy
+        K = dt_dz * (Ey[ix,iy,iz+Int32(1)] - Ey[ix,iy,iz]) - dt_dy * (Ez[ix,iy+Int32(1),iz] - Ez[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σy == _zero) & (σz == _zero) & (σx == _zero)
+            # FAST PATH: interior voxel — eliminate B entirely (H += μ⁻¹·K)
+            Hx[ix,iy,iz] += m_inv * K
+        else
+            # SLOW PATH: full PML cascade
+            # U stage: X uses σ_next = σ_y
+            if σy != _zero
+                u_old = UBx[ix,iy,iz]
+                UBx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
+                in_t = UBx[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+
+            # T stage: X uses σ_prev = σ_z
+            if σz != _zero
+                Bx[ix,iy,iz] = ((_one - σz) * Bx[ix,iy,iz] + in_t) / (_one + σz)
+            else
+                Bx[ix,iy,iz] += in_t
+            end
+
+            # W/H stage: X uses σ_own = σ_x
+            if σx != _zero
+                w_old = WBx[ix,iy,iz]
+                WBx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+                Hx[ix,iy,iz] = Hx[ix,iy,iz] + (_one + σx) * WBx[ix,iy,iz] - (_one - σx) * w_old
+            else
+                Hx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_BH_y_kernel!(
+    Ez, Ex,                          # 2 source E (read, stencil)
+    By, Hy,                          # target B, output H (read/write)
+    UBy, WBy,                        # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
+    m_inv,                           # scalar μ⁻¹
+    dt_dz, dt_dx,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(m_inv)
+    _zero = zero(m_inv)
+
+    @inbounds begin
+        # Forward curl_y(E) = dEz/dx - dEx/dz
+        K = dt_dx * (Ez[ix+Int32(1),iy,iz] - Ez[ix,iy,iz]) - dt_dz * (Ex[ix,iy,iz+Int32(1)] - Ex[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σz == _zero) & (σx == _zero) & (σy == _zero)
+            Hy[ix,iy,iz] += m_inv * K
+        else
+            # U stage: Y uses σ_next = σ_z
+            if σz != _zero
+                u_old = UBy[ix,iy,iz]
+                UBy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
+                in_t = UBy[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+
+            # T stage: Y uses σ_prev = σ_x
+            if σx != _zero
+                By[ix,iy,iz] = ((_one - σx) * By[ix,iy,iz] + in_t) / (_one + σx)
+            else
+                By[ix,iy,iz] += in_t
+            end
+
+            # W/H stage: Y uses σ_own = σ_y
+            if σy != _zero
+                w_old = WBy[ix,iy,iz]
+                WBy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+                Hy[ix,iy,iz] = Hy[ix,iy,iz] + (_one + σy) * WBy[ix,iy,iz] - (_one - σy) * w_old
+            else
+                Hy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_BH_z_kernel!(
+    Ex, Ey,                          # 2 source E (read, stencil)
+    Bz, Hz,                          # target B, output H (read/write)
+    UBz, WBz,                        # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
+    m_inv,                           # scalar μ⁻¹
+    dt_dx, dt_dy,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(m_inv)
+    _zero = zero(m_inv)
+
+    @inbounds begin
+        # Forward curl_z(E) = dEx/dy - dEy/dx
+        K = dt_dy * (Ex[ix,iy+Int32(1),iz] - Ex[ix,iy,iz]) - dt_dx * (Ey[ix+Int32(1),iy,iz] - Ey[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σx == _zero) & (σy == _zero) & (σz == _zero)
+            Hz[ix,iy,iz] += m_inv * K
+        else
+            # U stage: Z uses σ_next = σ_x
+            if σx != _zero
+                u_old = UBz[ix,iy,iz]
+                UBz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
+                in_t = UBz[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+
+            # T stage: Z uses σ_prev = σ_y
+            if σy != _zero
+                Bz[ix,iy,iz] = ((_one - σy) * Bz[ix,iy,iz] + in_t) / (_one + σy)
+            else
+                Bz[ix,iy,iz] += in_t
+            end
+
+            # W/H stage: Z uses σ_own = σ_z
+            if σz != _zero
+                w_old = WBz[ix,iy,iz]
+                WBz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+                Hz[ix,iy,iz] = Hz[ix,iy,iz] + (_one + σz) * WBz[ix,iy,iz] - (_one - σz) * w_old
+            else
+                Hz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
+# ==================== DE per-component kernels ====================
+
+function _cuda_pml_DE_x_kernel!(
+    Hy, Hz,                          # 2 source H (read, stencil)
+    Dx, Ex,                          # target D, output E (read/write)
+    UDx, WDx,                       # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
+    eps_x,                           # ε⁻¹ (scalar or per-voxel array)
+    dt_dy, dt_dz,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(dt_dy)
+    _zero = zero(dt_dy)
+
+    @inbounds begin
+        K = dt_dz * (Hy[ix,iy,iz-Int32(1)] - Hy[ix,iy,iz]) - dt_dy * (Hz[ix,iy-Int32(1),iz] - Hz[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σy == _zero) & (σz == _zero) & (σx == _zero)
+            # FAST PATH: eliminate D — E += ε⁻¹·K
+            Ex[ix,iy,iz] += _get_m(eps_x, ix_0, iy_0, iz_0) * K
+        else
+            if σy != _zero
+                u_old = UDx[ix,iy,iz]
+                UDx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
+                in_t = UDx[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+            if σz != _zero
+                Dx[ix,iy,iz] = ((_one - σz) * Dx[ix,iy,iz] + in_t) / (_one + σz)
+            else
+                Dx[ix,iy,iz] += in_t
+            end
+            m_val = _get_m(eps_x, ix_0, iy_0, iz_0)
+            if σx != _zero
+                w_old = WDx[ix,iy,iz]
+                WDx[ix,iy,iz] = m_val * Dx[ix,iy,iz]
+                Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σx) * WDx[ix,iy,iz] - (_one - σx) * w_old
+            else
+                Ex[ix,iy,iz] = m_val * Dx[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_DE_y_kernel!(
+    Hz, Hx,                          # 2 source H (read, stencil)
+    Dy, Ey,                          # target D, output E (read/write)
+    UDy, WDy,                       # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
+    eps_y,                           # ε⁻¹ (scalar or per-voxel array)
+    dt_dz, dt_dx,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(dt_dz)
+    _zero = zero(dt_dz)
+
+    @inbounds begin
+        K = dt_dx * (Hz[ix-Int32(1),iy,iz] - Hz[ix,iy,iz]) - dt_dz * (Hx[ix,iy,iz-Int32(1)] - Hx[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σz == _zero) & (σx == _zero) & (σy == _zero)
+            Ey[ix,iy,iz] += _get_m(eps_y, ix_0, iy_0, iz_0) * K
+        else
+            if σz != _zero
+                u_old = UDy[ix,iy,iz]
+                UDy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
+                in_t = UDy[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+            if σx != _zero
+                Dy[ix,iy,iz] = ((_one - σx) * Dy[ix,iy,iz] + in_t) / (_one + σx)
+            else
+                Dy[ix,iy,iz] += in_t
+            end
+            m_val = _get_m(eps_y, ix_0, iy_0, iz_0)
+            if σy != _zero
+                w_old = WDy[ix,iy,iz]
+                WDy[ix,iy,iz] = m_val * Dy[ix,iy,iz]
+                Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σy) * WDy[ix,iy,iz] - (_one - σy) * w_old
+            else
+                Ey[ix,iy,iz] = m_val * Dy[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
+function _cuda_pml_DE_z_kernel!(
+    Hx, Hy,                          # 2 source H (read, stencil)
+    Dz, Ez,                          # target D, output E (read/write)
+    UDz, WDz,                       # PML aux (read/write, may be dummy)
+    σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
+    eps_z,                           # ε⁻¹ (scalar or per-voxel array)
+    dt_dx, dt_dy,                    # grid spacing ratios
+    iNx::Int32,
+)
+    ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
+    iy_0 = blockIdx().y
+    iz_0 = blockIdx().z
+    ix_0 > iNx && return nothing
+    ix = ix_0 + Int32(1); iy = iy_0 + Int32(1); iz = iz_0 + Int32(1)
+    _one = one(dt_dx)
+    _zero = zero(dt_dx)
+
+    @inbounds begin
+        K = dt_dy * (Hx[ix,iy-Int32(1),iz] - Hx[ix,iy,iz]) - dt_dx * (Hy[ix-Int32(1),iy,iz] - Hy[ix,iy,iz])
+
+        σx = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
+        σy = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
+        σz = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
+
+        if (σx == _zero) & (σy == _zero) & (σz == _zero)
+            Ez[ix,iy,iz] += _get_m(eps_z, ix_0, iy_0, iz_0) * K
+        else
+            if σx != _zero
+                u_old = UDz[ix,iy,iz]
+                UDz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
+                in_t = UDz[ix,iy,iz] - u_old
+            else
+                in_t = K
+            end
+            if σy != _zero
+                Dz[ix,iy,iz] = ((_one - σy) * Dz[ix,iy,iz] + in_t) / (_one + σy)
+            else
+                Dz[ix,iy,iz] += in_t
+            end
+            m_val = _get_m(eps_z, ix_0, iy_0, iz_0)
+            if σz != _zero
+                w_old = WDz[ix,iy,iz]
+                WDz[ix,iy,iz] = m_val * Dz[ix,iy,iz]
+                Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σz) * WDz[ix,iy,iz] - (_one - σz) * w_old
+            else
+                Ez[ix,iy,iz] = m_val * Dz[ix,iy,iz]
+            end
+        end
+    end
+    return nothing
+end
+
 # Helper: find a valid non-Nothing PML σ array for dummy substitution
 @inline function _pml_dummy_σ(b, pf)
     pf.has_pml_x ? b.σBx : (pf.has_pml_y ? b.σBy : b.σBz)
@@ -758,26 +1117,34 @@ function step_H_fused!(sim::SimulationData)
     idx_curl = 1
 
     cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
-    use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
     # Precompute dt/dx ratios (only valid for uniform grids, used by raw CUDA paths)
     dt_dx = _grid_is_uniform(sim) ? sim.Δt / sim.Δx : zero(sim.Δt)
     dt_dy = _grid_is_uniform(sim) ? sim.Δt / sim.Δy : zero(sim.Δt)
     dt_dz = _grid_is_uniform(sim) ? sim.Δt / sim.Δz : zero(sim.Δt)
+    use_ms = sim._use_multi_stream
 
-    for chunk in sim.chunk_data
+    for (ci, chunk) in enumerate(sim.chunk_data)
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.μ_inv isa Real
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && (!chunk.spec.physics.has_sources || !sa) && g.μ_inv isa Real
             # Raw CUDA path: scalar μ, B eliminated — H_new = H_old + μ⁻¹·Δt·curl(E)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
             m_inv = backend_number(g.μ_inv)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_BH_kernel!(
-                f.fEx, f.fEy, f.fEz,
-                f.fHx, f.fHy, f.fHz,
-                m_inv * backend_number(dt_dx), m_inv * backend_number(dt_dy), m_inv * backend_number(dt_dz),
-                iNx)
+            if use_ms
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=sim._chunk_streams[ci] _cuda_fused_BH_kernel!(
+                    f.fEx, f.fEy, f.fEz,
+                    f.fHx, f.fHy, f.fHz,
+                    m_inv * backend_number(dt_dx), m_inv * backend_number(dt_dy), m_inv * backend_number(dt_dz),
+                    iNx)
+            else
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_BH_kernel!(
+                    f.fEx, f.fEy, f.fEz,
+                    f.fHx, f.fHy, f.fHz,
+                    m_inv * backend_number(dt_dx), m_inv * backend_number(dt_dy), m_inv * backend_number(dt_dz),
+                    iNx)
+            end
         elseif !has_any_pml(chunk.spec.physics)
             # KA fused path: interior chunks with sources active or per-voxel μ
             fused_kernel = sim._cached_fused_kernel
@@ -793,36 +1160,63 @@ function step_H_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
+        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) &&
+               _grid_is_uniform(sim) && has_any_pml(chunk.spec.physics) &&
+               (!chunk.spec.physics.has_sources || !sa) &&
                !chunk.spec.physics.has_sigma_B && g.μ_inv isa Real && f.fPBx isa Nothing
-            # Raw CUDA PML path: fused curl+update, no material σ, no polarizability
-            # Note: safe to use when has_sources && !sa because source arrays are zero after termination
-            pf = chunk.spec.physics
+            # Per-component raw CUDA PML with σ-skipping
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
-            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
             dummy3d = f.fBx
-            dummy_σ = _pml_dummy_σ(b, pf)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_BH_kernel!(
-                f.fEx, f.fEy, f.fEz,
-                f.fBx, f.fBy, f.fBz,
-                f.fHx, f.fHy, f.fHz,
-                pf.has_pml_y ? f.fUBx : dummy3d,
-                pf.has_pml_z ? f.fUBy : dummy3d,
-                pf.has_pml_x ? f.fUBz : dummy3d,
-                pf.has_pml_x ? f.fWBx : dummy3d,
-                pf.has_pml_y ? f.fWBy : dummy3d,
-                pf.has_pml_z ? f.fWBz : dummy3d,
-                pf.has_pml_x ? b.σBx : dummy_σ,
-                pf.has_pml_y ? b.σBy : dummy_σ,
-                pf.has_pml_z ? b.σBz : dummy_σ,
-                backend_number(g.μ_inv),
-                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
-                iNx, pml_x, pml_y, pml_z)
+
+            if use_ms
+                _s = sim._chunk_streams[ci]
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_BH_x_kernel!(
+                    f.fEy, f.fEz, f.fBx, f.fHx,
+                    isnothing(f.fUBx) ? dummy3d : f.fUBx,
+                    isnothing(f.fWBx) ? dummy3d : f.fWBx,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dy), backend_number(dt_dz), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_BH_y_kernel!(
+                    f.fEz, f.fEx, f.fBy, f.fHy,
+                    isnothing(f.fUBy) ? dummy3d : f.fUBy,
+                    isnothing(f.fWBy) ? dummy3d : f.fWBy,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dz), backend_number(dt_dx), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_BH_z_kernel!(
+                    f.fEx, f.fEy, f.fBz, f.fHz,
+                    isnothing(f.fUBz) ? dummy3d : f.fUBz,
+                    isnothing(f.fWBz) ? dummy3d : f.fWBz,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dx), backend_number(dt_dy), iNx)
+            else
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_BH_x_kernel!(
+                    f.fEy, f.fEz, f.fBx, f.fHx,
+                    isnothing(f.fUBx) ? dummy3d : f.fUBx,
+                    isnothing(f.fWBx) ? dummy3d : f.fWBx,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dy), backend_number(dt_dz), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_BH_y_kernel!(
+                    f.fEz, f.fEx, f.fBy, f.fHy,
+                    isnothing(f.fUBy) ? dummy3d : f.fUBy,
+                    isnothing(f.fWBy) ? dummy3d : f.fWBy,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dz), backend_number(dt_dx), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_BH_z_kernel!(
+                    f.fEx, f.fEy, f.fBz, f.fHz,
+                    isnothing(f.fUBz) ? dummy3d : f.fUBz,
+                    isnothing(f.fWBz) ? dummy3d : f.fWBz,
+                    b.σBx, b.σBy, b.σBz,
+                    backend_number(g.μ_inv),
+                    backend_number(dt_dx), backend_number(dt_dy), iNx)
+            end
         else
             # PML KA path: separate curl + update
-            # (Fusing was tested but regresses due to register/parameter pressure;
-            #  see experiment #16 in log.md)
             curl_B_kernel(
                 f.fEx, f.fEy, f.fEz,
                 f.fBx, f.fBy, f.fBz,
@@ -848,6 +1242,13 @@ function step_H_fused!(sim::SimulationData)
         end
     end
 
+    if use_ms
+        # GPU-side sync: make default stream wait for all chunk streams
+        for i in eachindex(sim._chunk_streams)
+            CUDA.synchronize(sim._chunk_streams[i])
+        end
+    end
+
     exchange_halos!(sim, :H)
     return
 end
@@ -859,37 +1260,53 @@ function step_E_fused!(sim::SimulationData)
     idx_curl = -1
 
     cuda_wg = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
-    use_raw_pml = get(ENV, "KHRONOS_RAW_PML", "0") == "1"
     dt_dx = _grid_is_uniform(sim) ? sim.Δt / sim.Δx : zero(sim.Δt)
     dt_dy = _grid_is_uniform(sim) ? sim.Δt / sim.Δy : zero(sim.Δt)
     dt_dz = _grid_is_uniform(sim) ? sim.Δt / sim.Δz : zero(sim.Δt)
+    use_ms = sim._use_multi_stream
 
-    for chunk in sim.chunk_data
+    for (ci, chunk) in enumerate(sim.chunk_data)
         f = chunk.fields; g = chunk.geometry_data; b = chunk.boundary_data
         nr = chunk.ndrange
 
-        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
+        if backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && (!chunk.spec.physics.has_sources || !sa) && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
             # Raw CUDA path: per-voxel ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
-            # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_kernel!(
-                f.fHx, f.fHy, f.fHz,
-                f.fEx, f.fEy, f.fEz,
-                g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
-                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
-                iNx)
-        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && !chunk.spec.physics.has_sources && g.ε_inv isa Real && f.fPDx isa Nothing
+            if use_ms
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=sim._chunk_streams[ci] _cuda_fused_DE_kernel!(
+                    f.fHx, f.fHy, f.fHz,
+                    f.fEx, f.fEy, f.fEz,
+                    g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                    backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                    iNx)
+            else
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_kernel!(
+                    f.fHx, f.fHy, f.fHz,
+                    f.fEx, f.fEy, f.fEz,
+                    g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
+                    backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                    iNx)
+            end
+        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && !has_any_pml(chunk.spec.physics) && (!chunk.spec.physics.has_sources || !sa) && g.ε_inv isa Real && f.fPDx isa Nothing
             # Raw CUDA path: scalar ε, D eliminated — E_new = E_old + ε⁻¹·Δt·curl(H)
-            # Cannot be used with dispersive materials (P subtraction needed)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_scalar_kernel!(
-                f.fHx, f.fHy, f.fHz,
-                f.fEx, f.fEy, f.fEz,
-                backend_number(g.ε_inv),
-                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
-                iNx)
+            if use_ms
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=sim._chunk_streams[ci] _cuda_fused_DE_scalar_kernel!(
+                    f.fHx, f.fHy, f.fHz,
+                    f.fEx, f.fEy, f.fEz,
+                    backend_number(g.ε_inv),
+                    backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                    iNx)
+            else
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_fused_DE_scalar_kernel!(
+                    f.fHx, f.fHy, f.fHz,
+                    f.fEx, f.fEy, f.fEz,
+                    backend_number(g.ε_inv),
+                    backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
+                    iNx)
+            end
         elseif !has_any_pml(chunk.spec.physics)
             # KA fused path: interior chunks with sources active
             fused_kernel = sim._cached_fused_kernel
@@ -905,60 +1322,68 @@ function step_E_fused!(sim::SimulationData)
                 sim.Δt, sim.Δx, sim.Δy, sim.Δz, idx_curl,
                 ndrange = nr,
             )
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
-               !chunk.spec.physics.has_sigma_D && g.ε_inv_x isa AbstractArray && f.fPDx isa Nothing
-            # Raw CUDA PML path: per-voxel ε, fused curl+update
-            pf = chunk.spec.physics
+        elseif backend_engine isa CUDABackend && !_fields_are_complex(sim) &&
+               _grid_is_uniform(sim) && has_any_pml(chunk.spec.physics) &&
+               (!chunk.spec.physics.has_sources || !sa) &&
+               !chunk.spec.physics.has_sigma_D && f.fPDx isa Nothing
+            # Per-component raw CUDA PML with σ-skipping (handles both scalar and per-voxel ε via _get_m)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), cuda_wg)
-            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
             dummy3d = f.fDx
-            dummy_σ = _pml_dummy_σD(b, pf)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_kernel!(
-                f.fHx, f.fHy, f.fHz,
-                f.fDx, f.fDy, f.fDz,
-                f.fEx, f.fEy, f.fEz,
-                pf.has_pml_y ? f.fUDx : dummy3d,
-                pf.has_pml_z ? f.fUDy : dummy3d,
-                pf.has_pml_x ? f.fUDz : dummy3d,
-                pf.has_pml_x ? f.fWDx : dummy3d,
-                pf.has_pml_y ? f.fWDy : dummy3d,
-                pf.has_pml_z ? f.fWDz : dummy3d,
-                pf.has_pml_x ? b.σDx : dummy_σ,
-                pf.has_pml_y ? b.σDy : dummy_σ,
-                pf.has_pml_z ? b.σDz : dummy_σ,
-                g.ε_inv_x, g.ε_inv_y, g.ε_inv_z,
-                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
-                iNx, pml_x, pml_y, pml_z)
-        elseif use_raw_pml && backend_engine isa CUDABackend && !_fields_are_complex(sim) && _grid_is_uniform(sim) && (!chunk.spec.physics.has_sources || !sa) &&
-               !chunk.spec.physics.has_sigma_D && g.ε_inv isa Real && f.fPDx isa Nothing
-            # Raw CUDA PML path: scalar ε, fused curl+update
-            pf = chunk.spec.physics
-            iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
-            nblocks_x = cld(Int(iNx), cuda_wg)
-            pml_x = Int32(pf.has_pml_x); pml_y = Int32(pf.has_pml_y); pml_z = Int32(pf.has_pml_z)
-            dummy3d = f.fDx
-            dummy_σ = _pml_dummy_σD(b, pf)
-            @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_scalar_kernel!(
-                f.fHx, f.fHy, f.fHz,
-                f.fDx, f.fDy, f.fDz,
-                f.fEx, f.fEy, f.fEz,
-                pf.has_pml_y ? f.fUDx : dummy3d,
-                pf.has_pml_z ? f.fUDy : dummy3d,
-                pf.has_pml_x ? f.fUDz : dummy3d,
-                pf.has_pml_x ? f.fWDx : dummy3d,
-                pf.has_pml_y ? f.fWDy : dummy3d,
-                pf.has_pml_z ? f.fWDz : dummy3d,
-                pf.has_pml_x ? b.σDx : dummy_σ,
-                pf.has_pml_y ? b.σDy : dummy_σ,
-                pf.has_pml_z ? b.σDz : dummy_σ,
-                backend_number(g.ε_inv),
-                backend_number(dt_dx), backend_number(dt_dy), backend_number(dt_dz),
-                iNx, pml_x, pml_y, pml_z)
+
+            # Resolve per-voxel or scalar ε⁻¹ for each component
+            eps_x = g.ε_inv_x isa AbstractArray ? g.ε_inv_x : backend_number(g.ε_inv)
+            eps_y = g.ε_inv_y isa AbstractArray ? g.ε_inv_y : backend_number(g.ε_inv)
+            eps_z = g.ε_inv_z isa AbstractArray ? g.ε_inv_z : backend_number(g.ε_inv)
+
+            if use_ms
+                _s = sim._chunk_streams[ci]
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_DE_x_kernel!(
+                    f.fHy, f.fHz, f.fDx, f.fEx,
+                    isnothing(f.fUDx) ? dummy3d : f.fUDx,
+                    isnothing(f.fWDx) ? dummy3d : f.fWDx,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_x,
+                    backend_number(dt_dy), backend_number(dt_dz), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_DE_y_kernel!(
+                    f.fHz, f.fHx, f.fDy, f.fEy,
+                    isnothing(f.fUDy) ? dummy3d : f.fUDy,
+                    isnothing(f.fWDy) ? dummy3d : f.fWDy,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_y,
+                    backend_number(dt_dz), backend_number(dt_dx), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) stream=_s _cuda_pml_DE_z_kernel!(
+                    f.fHx, f.fHy, f.fDz, f.fEz,
+                    isnothing(f.fUDz) ? dummy3d : f.fUDz,
+                    isnothing(f.fWDz) ? dummy3d : f.fWDz,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_z,
+                    backend_number(dt_dx), backend_number(dt_dy), iNx)
+            else
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_x_kernel!(
+                    f.fHy, f.fHz, f.fDx, f.fEx,
+                    isnothing(f.fUDx) ? dummy3d : f.fUDx,
+                    isnothing(f.fWDx) ? dummy3d : f.fWDx,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_x,
+                    backend_number(dt_dy), backend_number(dt_dz), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_y_kernel!(
+                    f.fHz, f.fHx, f.fDy, f.fEy,
+                    isnothing(f.fUDy) ? dummy3d : f.fUDy,
+                    isnothing(f.fWDy) ? dummy3d : f.fWDy,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_y,
+                    backend_number(dt_dz), backend_number(dt_dx), iNx)
+                @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(cuda_wg, 1, 1) _cuda_pml_DE_z_kernel!(
+                    f.fHx, f.fHy, f.fDz, f.fEz,
+                    isnothing(f.fUDz) ? dummy3d : f.fUDz,
+                    isnothing(f.fWDz) ? dummy3d : f.fWDz,
+                    b.σDx, b.σDy, b.σDz,
+                    eps_z,
+                    backend_number(dt_dx), backend_number(dt_dy), iNx)
+            end
         else
             # PML KA path: separate curl + update
-            # (Fusing was tested but regresses due to register/parameter pressure;
-            #  see experiment #16 in log.md)
             curl_D_kernel(
                 f.fHx, f.fHy, f.fHz,
                 f.fDx, f.fDy, f.fDz,
@@ -981,6 +1406,13 @@ function step_E_fused!(sim::SimulationData)
                 b.σDx, b.σDy, b.σDz,
                 ndrange = nr,
             )
+        end
+    end
+
+    if use_ms
+        # GPU-side sync: make default stream wait for all chunk streams
+        for i in eachindex(sim._chunk_streams)
+            CUDA.synchronize(sim._chunk_streams[i])
         end
     end
 

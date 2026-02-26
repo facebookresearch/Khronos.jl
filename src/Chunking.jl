@@ -770,7 +770,7 @@ end
 
 Generate a chunk plan for the simulation.
 
-If `sim.num_chunks` is `nothing`, returns a single-chunk plan (backward compat).
+If `sim.num_chunks` is `nothing`, returns a single-chunk plan (default).
 If `:auto` with PML boundaries, uses PML grid splitting for isotropic regions.
 If `:auto` without PML, returns a single chunk.
 If an `Int`, uses that number of chunks via BSP splitting.
@@ -778,7 +778,10 @@ If an `Int`, uses that number of chunks via BSP splitting.
 function plan_chunks(sim::SimulationData)::ChunkPlan
     nc = sim.num_chunks
 
-    # :auto with PML -> PML grid split
+    # PML grid split: activated when user requests :auto chunking.
+    # Splits the domain at PML boundaries to separate interior (PML-free)
+    # chunks from boundary (PML) chunks, enabling the fast fused kernel
+    # path for the interior region.
     if nc === :auto && !isnothing(sim.boundaries)
         return _plan_chunks_pml_grid(sim)
     end
@@ -786,7 +789,7 @@ function plan_chunks(sim::SimulationData)::ChunkPlan
     target = _resolve_num_chunks(sim)
 
     if target <= 1
-        # Single-chunk baseline
+        # Single-chunk baseline (no PML or explicit single-chunk request)
         vol = Volume(center = sim.cell_center, size = sim.cell_size)
         gv = GridVolume(sim, Center())
         physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries)
@@ -1196,7 +1199,8 @@ end
 
 Create boundary data for a chunk. Non-PML chunks get all-nothing BoundaryData.
 For PML chunks, create chunk-local sigma arrays so that kernel-local indices
-map to the correct global PML conductivity values.
+map to the correct global PML conductivity values. Non-PML axes get zero-filled
+σ arrays so per-component kernels can use σ-skipping without dummy-array logic.
 """
 function _init_chunk_boundaries(sim::SimulationData, spec::ChunkSpec)
     pf = spec.physics
@@ -1206,13 +1210,20 @@ function _init_chunk_boundaries(sim::SimulationData, spec::ChunkSpec)
 
     gv = spec.grid_volume
 
+    # For PML chunks, always allocate σ arrays on every axis.
+    # Non-PML axes get zero-filled 1D arrays so the per-component kernels
+    # can unconditionally read σ and use σ-skipping (σ==0 → fast path).
+    _slice_or_zero(σ_global, has_pml, N, start) =
+        has_pml ? _slice_pml_sigma(σ_global, N, start) :
+                  backend_array(zeros(backend_number, 2*N+1))
+
     return BoundaryData{backend_array}(
-        σBx = pf.has_pml_x ? _slice_pml_sigma(sim.boundary_data.σBx, gv.Nx, gv.start_idx[1]) : nothing,
-        σBy = pf.has_pml_y ? _slice_pml_sigma(sim.boundary_data.σBy, gv.Ny, gv.start_idx[2]) : nothing,
-        σBz = pf.has_pml_z ? _slice_pml_sigma(sim.boundary_data.σBz, gv.Nz, gv.start_idx[3]) : nothing,
-        σDx = pf.has_pml_x ? _slice_pml_sigma(sim.boundary_data.σDx, gv.Nx, gv.start_idx[1]) : nothing,
-        σDy = pf.has_pml_y ? _slice_pml_sigma(sim.boundary_data.σDy, gv.Ny, gv.start_idx[2]) : nothing,
-        σDz = pf.has_pml_z ? _slice_pml_sigma(sim.boundary_data.σDz, gv.Nz, gv.start_idx[3]) : nothing,
+        σBx = _slice_or_zero(sim.boundary_data.σBx, pf.has_pml_x, gv.Nx, gv.start_idx[1]),
+        σBy = _slice_or_zero(sim.boundary_data.σBy, pf.has_pml_y, gv.Ny, gv.start_idx[2]),
+        σBz = _slice_or_zero(sim.boundary_data.σBz, pf.has_pml_z, gv.Nz, gv.start_idx[3]),
+        σDx = _slice_or_zero(sim.boundary_data.σDx, pf.has_pml_x, gv.Nx, gv.start_idx[1]),
+        σDy = _slice_or_zero(sim.boundary_data.σDy, pf.has_pml_y, gv.Ny, gv.start_idx[2]),
+        σDz = _slice_or_zero(sim.boundary_data.σDz, pf.has_pml_z, gv.Nz, gv.start_idx[3]),
     )
 end
 
