@@ -19,5 +19,6 @@ using Test
     include("test_mode_monitor.jl")
     include("test_absorber.jl")
     include("test_subpixel.jl")
+    include("test_gds.jl")
 
 end

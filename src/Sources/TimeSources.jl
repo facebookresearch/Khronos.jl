@@ -138,4 +138,52 @@ end
 # Custom source
 # ---------------------------------------------------------- #
 
-# TODO
+"""
+    CustomSourceData{F,N} <: TimeSource
+
+A time source driven by an arbitrary user-supplied function `src_func(t)`.
+Used by the adjoint solver for FilteredSource basis functions and arbitrary
+waveform injection.
+
+Fields:
+- `src_func::F`: callable `src_func(t::Real) -> Complex{Real}`.
+- `fcen::N`: center frequency (for auto-decimation and bandwidth estimation).
+- `fwidth::N`: frequency width (bandwidth of the source content).
+- `end_time::N`: time after which the source is zero.
+"""
+@with_kw struct CustomSourceData{F,N<:Number} <: TimeSource
+    src_func::F
+    fcen::N
+    fwidth::N
+    end_time::N
+end
+
+"""
+    CustomSource(; src_func, fcen, fwidth, end_time)
+
+Create a custom time source driven by `src_func(t)`.
+"""
+function CustomSource(; src_func, fcen, fwidth, end_time)
+    return CustomSourceData{typeof(src_func),backend_number}(
+        src_func,
+        backend_number(fcen),
+        backend_number(fwidth),
+        backend_number(end_time),
+    )
+end
+
+function eval_time_source(src::CustomSourceData{F,N}, t::Real) where {F,N<:Number}
+    T = real(N)
+    if T(t) > src.end_time
+        return zero(Complex{T})
+    end
+    return Complex{T}(src.src_func(T(t)))
+end
+
+get_cutoff(src::CustomSourceData) = src.end_time
+
+function get_frequency(src::CustomSourceData)
+    return src.fcen
+end
+
+export CustomSource

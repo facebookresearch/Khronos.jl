@@ -479,4 +479,104 @@ dft_fields_norm(monitor_list::Vector{<:MonitorData}) =
     sum([dft_fields_norm(m) for m in monitor_list])
 dft_fields_norm(sim::SimulationData) = dft_fields_norm(sim.monitor_data)
 
+# ---------------------------------------------------------- #
+# Simulation reset for adjoint runs
+# ---------------------------------------------------------- #
+
+"""
+    _zero_field!(arr)
+
+Zero a field array on the GPU (or CPU). No-op if the array is nothing.
+"""
+function _zero_field!(arr::AbstractArray)
+    fill!(arr, zero(eltype(arr)))
+end
+_zero_field!(::Nothing) = nothing
+
+"""
+    reset_fields!(sim::SimulationData)
+
+Reset all field arrays to zero for a new simulation run (e.g., the adjoint run).
+This zeros:
+- Primary fields (E, H, D, B)
+- PML auxiliary fields (C, U, W)
+- Source arrays (SD, SB)
+- DFT monitor accumulators
+- Per-chunk field arrays
+- Polarization P/P_prev arrays
+- Timestep counter
+
+Does NOT re-run `prepare_simulation!` -- geometry and boundaries stay intact.
+Sources and monitors should be reconfigured by the caller after reset.
+"""
+function reset_fields!(sim::SimulationData)
+    if !sim.is_prepared
+        return  # nothing to reset if not yet prepared
+    end
+
+    # Reset timestep
+    sim.timestep = 0
+    sim.sources_active = true
+
+    # Zero per-chunk field arrays (this is where the actual field data lives)
+    if !isnothing(sim.chunk_data)
+        for chunk in sim.chunk_data
+            f = chunk.fields
+            # Primary fields
+            for fn in (:fEx, :fEy, :fEz, :fHx, :fHy, :fHz,
+                        :fBx, :fBy, :fBz, :fDx, :fDy, :fDz)
+                arr = getfield(f, fn)
+                _zero_field!(arr)
+            end
+
+            # PML auxiliary fields
+            for fn in (:fCBx, :fCBy, :fCBz, :fUBx, :fUBy, :fUBz,
+                        :fWBx, :fWBy, :fWBz, :fSBx, :fSBy, :fSBz,
+                        :fPBx, :fPBy, :fPBz,
+                        :fCDx, :fCDy, :fCDz, :fUDx, :fUDy, :fUDz,
+                        :fWDx, :fWDy, :fWDz, :fSDx, :fSDy, :fSDz,
+                        :fPDx, :fPDy, :fPDz)
+                arr = getfield(f, fn)
+                _zero_field!(arr)
+            end
+
+            # Polarization data (dispersive materials)
+            if !isnothing(chunk.polarization_data)
+                for pole in chunk.polarization_data.poles
+                    _zero_field!(pole.Px)
+                    _zero_field!(pole.Py)
+                    _zero_field!(pole.Pz)
+                    _zero_field!(pole.Px_prev)
+                    _zero_field!(pole.Py_prev)
+                    _zero_field!(pole.Pz_prev)
+                end
+            end
+        end
+    end
+
+    # Zero global field arrays (single-chunk mode uses these)
+    if !isnothing(sim.fields)
+        f = sim.fields
+        for fn in fieldnames(Fields)
+            arr = getfield(f, fn)
+            _zero_field!(arr)
+        end
+    end
+
+    # Clear DFT monitor accumulators
+    for md in sim.monitor_data
+        if md isa DFTMonitorData
+            _zero_field!(md.fields)
+        end
+    end
+
+    # Invalidate CUDA graph captures (field state changed)
+    sim._cuda_graph_exec_H = nothing
+    sim._cuda_graph_exec_E = nothing
+
+    return nothing
+end
+
+export reset_fields!
+
 export Simulation

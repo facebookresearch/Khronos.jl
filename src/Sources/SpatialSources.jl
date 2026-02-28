@@ -598,7 +598,7 @@ function ModeSource(;
     boundary_conditions = (1, 1, 1, 1),
 )::EquivalentSourceData
 
-    # Compute the relevant mode profiles    
+    # Compute the relevant mode profiles
     mode_data = get_mode_profiles(;
         frequency = frequency,
         mode_solver_resolution = mode_solver_resolution,
@@ -610,14 +610,27 @@ function ModeSource(;
         boundary_conditions = boundary_conditions,
     )
 
+    # Mode solver returns 2D fields (nx, ny).  EquivalentSource expects 3D
+    # fields with a singleton dimension along the normal axis.
+    normal_axis = findfirst(x -> x == 0.0, size)
+    function _expand(f)
+        if ndims(f) == 2
+            # Insert a singleton dimension at the normal axis position
+            shape = collect(Base.size(f))
+            insert!(shape, normal_axis, 1)
+            return reshape(f, shape...)
+        end
+        return f
+    end
+
     # Prepare all of the fields at the monitor
     fields = Dict(
-        Ex() => mode_data.Ex,
-        Ey() => mode_data.Ey,
-        Ez() => mode_data.Ez,
-        Hx() => mode_data.Hx,
-        Hy() => mode_data.Hy,
-        Hz() => mode_data.Hz,
+        Ex() => _expand(mode_data.Ex),
+        Ey() => _expand(mode_data.Ey),
+        Ez() => _expand(mode_data.Ez),
+        Hx() => _expand(mode_data.Hx),
+        Hy() => _expand(mode_data.Hy),
+        Hz() => _expand(mode_data.Hz),
     )
 
     # Prepare an equivalent source from the fields

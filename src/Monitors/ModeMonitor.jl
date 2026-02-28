@@ -8,20 +8,35 @@
 
 export compute_mode_amplitudes, get_mode_transmission
 
-# Cache for mode profiles keyed by (size, normal_axis, geometry_id, mode_spec_hash, freqs_hash)
-# Monitors with the same cross-section and frequencies can reuse solved modes.
-const _mode_profile_cache = Dict{UInt64, Vector{VectorModesolver.Mode}}()
+# Cache for mode profiles keyed by cross-section geometry and frequency set.
+# Monitors at the same position with different mode indices share a single cache entry.
+# Value: (max_nev, all_modes) where all_modes[freq_idx][mode_idx] = Mode.
+const _mode_profile_cache = Dict{UInt64, Tuple{Int, Vector{Vector{VectorModesolver.Mode}}}}()
 
 function _mode_cache_key(monitor::ModeMonitor, normal_axis::Int)
     # The mode profile depends on size, normal_axis, geometry, mode_spec params, and frequencies.
-    # It does NOT depend on center (position along normal axis).
+    # It does NOT depend on num_modes (mode index), so monitors requesting different mode
+    # indices at the same cross-section share work.
+    #
+    # Cache grouping via mode_group:
+    #   :auto (default)  → key includes monitor center, so each position gets its own solve.
+    #                      This is the safe default: no risk of sharing across different
+    #                      cross-sections.
+    #   any other Symbol → key includes the symbol instead of center, so ALL monitors with
+    #                      the same mode_group share a single solve.  Use this when you know
+    #                      multiple monitors see the same waveguide cross-section (e.g.
+    #                      input/output of a straight waveguide).
+    group = monitor.mode_spec.mode_group
+    group_key = group === :auto ? monitor.center : group
+
     return hash((
+        group_key,
         monitor.size,
         normal_axis,
         objectid(monitor.mode_spec.geometry),  # same geometry vector → same modes
         monitor.mode_spec.mode_solver_resolution,
         monitor.mode_spec.solver_tolerance,
-        monitor.mode_spec.num_modes,
+        monitor.mode_spec.target_neff,
         monitor.mode_spec.num_mode_freqs,
         monitor.frequencies,
     ))
@@ -29,6 +44,33 @@ end
 
 function clear_mode_cache!()
     empty!(_mode_profile_cache)
+    empty!(_mode_max_nev)
+end
+
+# Pre-computed max mode index per cache key.  Populated by `prescan_mode_monitors!`
+# before any `init_mode_monitor` calls so that the first solve for a cache key
+# already requests enough modes for all monitors sharing that key.
+const _mode_max_nev = Dict{UInt64, Int}()
+
+"""
+    prescan_mode_monitors!(monitors)
+
+Pre-scan all `ModeMonitor`s and record, for each cache key, the maximum
+`num_modes` (mode index) requested.  This allows the first call to
+`init_mode_monitor` to solve for all needed modes at once, avoiding
+repeated re-solves as progressively higher mode indices are encountered.
+"""
+function prescan_mode_monitors!(monitors)
+    empty!(_mode_max_nev)
+    for m in monitors
+        if m isa ModeMonitor
+            normal_axis = findfirst(x -> x == 0.0, m.size)
+            isnothing(normal_axis) && continue
+            key = _mode_cache_key(m, normal_axis)
+            prev = get(_mode_max_nev, key, 0)
+            _mode_max_nev[key] = max(prev, m.mode_spec.num_modes)
+        end
+    end
 end
 
 # ------------------------------------------------------------------- #
@@ -186,58 +228,85 @@ function init_mode_monitor(sim, monitor::ModeMonitor)
         push!(tangential_H_monitors, dft_mon)
     end
 
-    # Solve for mode profiles at each frequency (or reuse from cache)
+    # Solve for mode profiles using sweep solver (or reuse from cache).
+    # The cache stores ALL modes up to max_nev, so monitors requesting
+    # different mode indices at the same cross-section share work.
     mode_spec = monitor.mode_spec
     geometry = isempty(mode_spec.geometry) ? sim.geometry : mode_spec.geometry
     cache_key = _mode_cache_key(monitor, normal_axis)
+    needed_nev = mode_spec.num_modes  # mode index this monitor needs
 
-    mode_profiles = get!(_mode_profile_cache, cache_key) do
+    cached = get(_mode_profile_cache, cache_key, nothing)
+
+    if !isnothing(cached) && cached[1] >= needed_nev
+        # Cache hit with enough modes already solved
+        all_modes = cached[2]
+    else
+        # Cache miss or need more modes than previously solved.
+        # Use pre-scanned max_nev so we solve for ALL modes any monitor
+        # sharing this cache key will need — avoiding redundant re-solves.
+        prev_nev = isnothing(cached) ? 0 : cached[1]
+        prescanned = get(_mode_max_nev, cache_key, needed_nev)
+        max_nev = max(needed_nev, prev_nev, prescanned)
+
         all_freqs = Float64.(monitor.frequencies)
         n_freqs = length(all_freqs)
         n_coarse = mode_spec.num_mode_freqs
 
-        # Decide whether to interpolate or solve every frequency
-        if n_coarse <= 0 || n_coarse >= n_freqs
-            # Full solve at every frequency (original behavior)
-            profiles = VectorModesolver.Mode[]
-            for freq in all_freqs
-                mode = get_mode_profiles(;
-                    frequency = freq,
-                    mode_solver_resolution = mode_spec.mode_solver_resolution,
-                    mode_index = mode_spec.num_modes,
-                    center = copy(monitor.center),
-                    size = copy(monitor.size),
-                    solver_tolerance = mode_spec.solver_tolerance,
-                    geometry = geometry,
-                )
-                push!(profiles, mode)
-            end
-            profiles
+        if n_coarse < 2 || n_coarse >= n_freqs
+            # Full solve at every frequency using sweep solver
+            all_modes = get_mode_profiles_sweep(
+                frequencies = all_freqs,
+                max_mode_index = max_nev,
+                mode_solver_resolution = mode_spec.mode_solver_resolution,
+                center = copy(monitor.center),
+                size = copy(monitor.size),
+                solver_tolerance = mode_spec.solver_tolerance,
+                geometry = geometry,
+                target_neff = mode_spec.target_neff,
+            )
         else
-            # Coarse solve + interpolation
+            # Coarse solve + per-mode-index interpolation
             coarse_indices = round.(Int, range(1, n_freqs, length = n_coarse))
             coarse_freqs = all_freqs[coarse_indices]
 
             @info("  Mode interpolation: solving at $n_coarse of $n_freqs frequencies")
 
-            # Solve at coarse frequencies
-            coarse_modes = VectorModesolver.Mode[]
-            for freq in coarse_freqs
-                mode = get_mode_profiles(;
-                    frequency = freq,
-                    mode_solver_resolution = mode_spec.mode_solver_resolution,
-                    mode_index = mode_spec.num_modes,
-                    center = copy(monitor.center),
-                    size = copy(monitor.size),
-                    solver_tolerance = mode_spec.solver_tolerance,
-                    geometry = geometry,
-                )
-                push!(coarse_modes, mode)
-            end
+            coarse_modes = get_mode_profiles_sweep(
+                frequencies = coarse_freqs,
+                max_mode_index = max_nev,
+                mode_solver_resolution = mode_spec.mode_solver_resolution,
+                center = copy(monitor.center),
+                size = copy(monitor.size),
+                solver_tolerance = mode_spec.solver_tolerance,
+                geometry = geometry,
+                target_neff = mode_spec.target_neff,
+            )
 
-            # Interpolate to all target frequencies
-            _interpolate_mode_profiles(coarse_freqs, coarse_modes, all_freqs)
+            # Interpolate each mode index separately (phase alignment is per-mode)
+            all_modes = [Vector{VectorModesolver.Mode}(undef, max_nev) for _ in 1:n_freqs]
+            for mi in 1:max_nev
+                mi_coarse = [coarse_modes[fi][mi] for fi in 1:n_coarse]
+                mi_interp = _interpolate_mode_profiles(coarse_freqs, mi_coarse, all_freqs)
+                for fi in 1:n_freqs
+                    all_modes[fi][mi] = mi_interp[fi]
+                end
+            end
         end
+
+        _mode_profile_cache[cache_key] = (max_nev, all_modes)
+    end
+
+    # Select the mode index this monitor needs
+    mode_profiles = VectorModesolver.Mode[]
+    for fi in eachindex(monitor.frequencies)
+        n_available = length(all_modes[fi])
+        if n_available < needed_nev
+            error("Mode solver found only $n_available modes at frequency " *
+                  "$(monitor.frequencies[fi]), but mode index $needed_nev was requested. " *
+                  "Try reducing num_modes or setting target_neff in ModeSpec.")
+        end
+        push!(mode_profiles, all_modes[fi][needed_nev])
     end
 
     md = ModeMonitorData(

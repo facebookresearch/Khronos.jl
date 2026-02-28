@@ -6,6 +6,11 @@
 Time domain monitors etc.
 """
 
+include("./Near2Far.jl")
+include("./ModeMonitor.jl")
+include("./FluxMonitor.jl")
+include("./DiffractionMonitor.jl")
+
 # ------------------------------------------------------------ #
 # Auto-decimation
 # ------------------------------------------------------------ #
@@ -37,6 +42,9 @@ function auto_decimate!(sim::SimulationData)
             f_max = max(f_max, Float64(tp.fcen) + Float64(tp.fwidth) / 2)
         elseif tp isa ContinuousWaveData
             f_max = max(f_max, Float64(tp.fcen))
+        elseif tp isa CustomSourceData
+            # CustomSource has explicit fwidth
+            f_max = max(f_max, Float64(tp.fcen) + Float64(tp.fwidth) / 2)
         else
             # Unknown source type — be conservative
             f_max = max(f_max, 1.0 / (2.0 * Float64(Δt)))
@@ -74,6 +82,10 @@ end
 # ------------------------------------------------------------ #
 
 function init_monitors(sim::SimulationData, monitors)
+    # Pre-scan mode monitors so the first solve per cache key requests
+    # enough modes for all monitors sharing that key.
+    prescan_mode_monitors!(monitors)
+
     for m in monitors
         push!(sim.monitor_data, init_monitors(sim, m))
     end
@@ -120,23 +132,63 @@ function update_monitor(sim::SimulationData, monitor::TimeMonitorData, time::Rea
     idx = monitor.time_index[1]
     idx > size(monitor.fields, 1) && return  # buffer full
 
-    # Get the field array for this component
-    field = get_fields_from_component(sim, monitor.component)
-    isnothing(field) && return
-
     gv = monitor.gv
-    # Read the field value from the GPU at the monitor location
-    # For a point monitor, gv.Nx = gv.Ny = gv.Nz = 1
-    # P.5: field arrays have +1 offset for ghost cells
-    for iz in 1:gv.Nz, iy in 1:gv.Ny, ix in 1:gv.Nx
-        fx = ix + gv.start_idx[1]
-        fy = iy + gv.start_idx[2]
-        fz = iz + gv.start_idx[3]
-        val = Array(field[fx:fx, fy:fy, fz:fz])[1]
-        if sim.ndims == 2
-            monitor.fields[idx, ix, iy] = val
-        else
-            monitor.fields[idx, ix, iy, iz] = val
+
+    if isnothing(sim.chunk_data) || length(sim.chunk_data) == 1
+        # Single chunk: use sim.fields directly (shared reference)
+        field = get_fields_from_component(sim, monitor.component)
+        isnothing(field) && return
+
+        # Read the field value from the GPU at the monitor location
+        # For a point monitor, gv.Nx = gv.Ny = gv.Nz = 1
+        # P.5: field arrays have +1 offset for ghost cells
+        for iz in 1:gv.Nz, iy in 1:gv.Ny, ix in 1:gv.Nx
+            fx = ix + gv.start_idx[1]
+            fy = iy + gv.start_idx[2]
+            fz = iz + gv.start_idx[3]
+            val = Array(field[fx:fx, fy:fy, fz:fz])[1]
+            if sim.ndims == 2
+                monitor.fields[idx, ix, iy] = val
+            else
+                monitor.fields[idx, ix, iy, iz] = val
+            end
+        end
+    else
+        # Multi-chunk: find the chunk containing the monitor point and read from it
+        for chunk in sim.chunk_data
+            chunk_field = _get_chunk_field(chunk, monitor.component)
+            isnothing(chunk_field) && continue
+
+            chunk_gv = chunk.spec.grid_volume
+
+            # Check if monitor region overlaps this chunk
+            overlap_start = max.(gv.start_idx, chunk_gv.start_idx)
+            overlap_end = min.(gv.end_idx, chunk_gv.end_idx)
+            any(overlap_end .< overlap_start) && continue
+
+            # P.5: +1 for ghost cell in raw field arrays (no OffsetArray)
+            for iz in 1:gv.Nz, iy in 1:gv.Ny, ix in 1:gv.Nx
+                gx = ix + gv.start_idx[1] - 1
+                gy = iy + gv.start_idx[2] - 1
+                gz = iz + gv.start_idx[3] - 1
+                # Check if this global index is in this chunk
+                gx < chunk_gv.start_idx[1] && continue
+                gx > chunk_gv.end_idx[1] && continue
+                gy < chunk_gv.start_idx[2] && continue
+                gy > chunk_gv.end_idx[2] && continue
+                gz < chunk_gv.start_idx[3] && continue
+                gz > chunk_gv.end_idx[3] && continue
+                # Chunk-local coordinate with +1 ghost offset
+                cx = gx - chunk_gv.start_idx[1] + 2
+                cy = gy - chunk_gv.start_idx[2] + 2
+                cz = gz - chunk_gv.start_idx[3] + 2
+                val = Array(chunk_field[cx:cx, cy:cy, cz:cz])[1]
+                if sim.ndims == 2
+                    monitor.fields[idx, ix, iy] = val
+                else
+                    monitor.fields[idx, ix, iy, iz] = val
+                end
+            end
         end
     end
 
