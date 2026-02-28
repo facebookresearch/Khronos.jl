@@ -18,6 +18,8 @@ using Test
 using GeometryPrimitives
 include("benchmark_utils.jl")
 using .BenchmarkUtils
+include("benchmark_metrics.jl")
+using .BenchmarkMetrics
 
 debuglogger = ConsoleLogger(stderr, Logging.Warn)
 global_logger(debuglogger)
@@ -28,7 +30,7 @@ YAML_FILENAME = joinpath(@__DIR__, "uled.yml")
 profiling_results = YAML.load_file(YAML_FILENAME)
 
 # set the appropriate backend and determine if this is a profile run
-backend, precision, profile_run = detect_and_set_backend()
+backend, precision, profile_run, metrics_run = detect_and_set_backend()
 
 # current hardware
 hardware_key = get_hardware_key()
@@ -208,32 +210,46 @@ function build_uled_sim(resolution, domain_scale)
     return sim
 end
 
-@testset "Benchmark: micro-LED with dispersive metal" begin
-    TESTNAME = "uled_dispersive"
+try
+    @testset "Benchmark: micro-LED with dispersive metal" begin
+        TESTNAME = "uled_dispersive"
 
-    current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
+        current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
 
-    for benchmark in current_testset
-        resolution = benchmark["resolution"]
-        tolerance = benchmark["tolerance"]
-        benchmark_rate = benchmark["timestep_rate"]
-        domain_scale = benchmark["domain_scale"]
+        for benchmark in current_testset
+            resolution = benchmark["resolution"]
+            tolerance = benchmark["tolerance"]
+            benchmark_rate = benchmark["timestep_rate"]
+            domain_scale = benchmark["domain_scale"]
 
-        @testset "resolution: $resolution | domain_scale: $domain_scale" begin
+            @testset "resolution: $resolution | domain_scale: $domain_scale" begin
 
-            sim = build_uled_sim(resolution, domain_scale)
-            timstep_rate = Khronos.run_benchmark(sim, 110)
-            benchmark_result(
-                timstep_rate,
-                benchmark_rate,
-                tolerance,
-                profile_run,
-                benchmark,
-            )
+                sim = build_uled_sim(resolution, domain_scale)
+                timstep_rate = Khronos.run_benchmark(sim, 110)
+                benchmark_result(
+                    timstep_rate,
+                    benchmark_rate,
+                    tolerance,
+                    profile_run,
+                    benchmark,
+                )
+            end
         end
+    end
+catch e
+    if !metrics_run
+        rethrow(e)
     end
 end
 
 if profile_run
     YAML.write_file(YAML_FILENAME, profiling_results)
+end
+
+if metrics_run
+    precision_type = precision == "Float32" ? Float32 : Float64
+    configs = profiling_results["uled_dispersive"][hardware_key][backend][precision]
+    cfg = configs[end]
+    sim = build_uled_sim(cfg["resolution"], cfg["domain_scale"])
+    run_metrics(sim, precision_type; label="uled (res=$(cfg["resolution"]), domain_scale=$(cfg["domain_scale"]))")
 end

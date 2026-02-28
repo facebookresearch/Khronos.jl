@@ -17,6 +17,8 @@ using Test
 using GeometryPrimitives
 include("benchmark_utils.jl")
 using .BenchmarkUtils
+include("benchmark_metrics.jl")
+using .BenchmarkMetrics
 
 debuglogger = ConsoleLogger(stderr, Logging.Warn)
 global_logger(debuglogger)
@@ -27,7 +29,7 @@ YAML_FILENAME = joinpath(@__DIR__, "ring_coupler.yml")
 profiling_results = YAML.load_file(YAML_FILENAME)
 
 # set the appropriate backend and determine if this is a profile run
-backend, precision, profile_run = detect_and_set_backend()
+backend, precision, profile_run, metrics_run = detect_and_set_backend()
 
 # current hardware
 hardware_key = get_hardware_key()
@@ -126,32 +128,46 @@ function build_ring_coupler_sim(resolution, ring_radius)
     return sim
 end
 
-@testset "Benchmark: ring coupler" begin
-    TESTNAME = "ring_coupler"
+try
+    @testset "Benchmark: ring coupler" begin
+        TESTNAME = "ring_coupler"
 
-    current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
+        current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
 
-    for benchmark in current_testset
-        resolution = benchmark["resolution"]
-        tolerance = benchmark["tolerance"]
-        benchmark_rate = benchmark["timestep_rate"]
-        ring_radius = benchmark["ring_radius"]
+        for benchmark in current_testset
+            resolution = benchmark["resolution"]
+            tolerance = benchmark["tolerance"]
+            benchmark_rate = benchmark["timestep_rate"]
+            ring_radius = benchmark["ring_radius"]
 
-        @testset "resolution: $resolution | ring_radius: $ring_radius" begin
+            @testset "resolution: $resolution | ring_radius: $ring_radius" begin
 
-            sim = build_ring_coupler_sim(resolution, ring_radius)
-            timstep_rate = Khronos.run_benchmark(sim, 110)
-            benchmark_result(
-                timstep_rate,
-                benchmark_rate,
-                tolerance,
-                profile_run,
-                benchmark,
-            )
+                sim = build_ring_coupler_sim(resolution, ring_radius)
+                timstep_rate = Khronos.run_benchmark(sim, 110)
+                benchmark_result(
+                    timstep_rate,
+                    benchmark_rate,
+                    tolerance,
+                    profile_run,
+                    benchmark,
+                )
+            end
         end
+    end
+catch e
+    if !metrics_run
+        rethrow(e)
     end
 end
 
 if profile_run
     YAML.write_file(YAML_FILENAME, profiling_results)
+end
+
+if metrics_run
+    precision_type = precision == "Float32" ? Float32 : Float64
+    configs = profiling_results["ring_coupler"][hardware_key][backend][precision]
+    cfg = configs[end]
+    sim = build_ring_coupler_sim(cfg["resolution"], cfg["ring_radius"])
+    run_metrics(sim, precision_type; label="ring_coupler (res=$(cfg["resolution"]), radius=$(cfg["ring_radius"]))")
 end

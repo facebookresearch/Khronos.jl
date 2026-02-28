@@ -16,6 +16,8 @@ using Test
 using GeometryPrimitives
 include("benchmark_utils.jl")
 using .BenchmarkUtils
+include("benchmark_metrics.jl")
+using .BenchmarkMetrics
 
 debuglogger = ConsoleLogger(stderr, Logging.Warn)
 global_logger(debuglogger)
@@ -26,7 +28,7 @@ YAML_FILENAME = joinpath(@__DIR__, "waveguide_mode.yml")
 profiling_results = YAML.load_file(YAML_FILENAME)
 
 # set the appropriate backend and determine if this is a profile run
-backend, precision, profile_run = detect_and_set_backend()
+backend, precision, profile_run, metrics_run = detect_and_set_backend()
 
 # current hardware
 hardware_key = get_hardware_key()
@@ -83,32 +85,46 @@ function build_waveguide_mode_sim(resolution, wg_length)
     return sim
 end
 
-@testset "Benchmark: waveguide with mode source" begin
-    TESTNAME = "waveguide_mode_source"
+try
+    @testset "Benchmark: waveguide with mode source" begin
+        TESTNAME = "waveguide_mode_source"
 
-    current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
+        current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
 
-    for benchmark in current_testset
-        resolution = benchmark["resolution"]
-        tolerance = benchmark["tolerance"]
-        benchmark_rate = benchmark["timestep_rate"]
-        wg_length = benchmark["wg_length"]
+        for benchmark in current_testset
+            resolution = benchmark["resolution"]
+            tolerance = benchmark["tolerance"]
+            benchmark_rate = benchmark["timestep_rate"]
+            wg_length = benchmark["wg_length"]
 
-        @testset "resolution: $resolution | wg_length: $wg_length" begin
+            @testset "resolution: $resolution | wg_length: $wg_length" begin
 
-            sim = build_waveguide_mode_sim(resolution, wg_length)
-            timstep_rate = Khronos.run_benchmark(sim, 110)
-            benchmark_result(
-                timstep_rate,
-                benchmark_rate,
-                tolerance,
-                profile_run,
-                benchmark,
-            )
+                sim = build_waveguide_mode_sim(resolution, wg_length)
+                timstep_rate = Khronos.run_benchmark(sim, 110)
+                benchmark_result(
+                    timstep_rate,
+                    benchmark_rate,
+                    tolerance,
+                    profile_run,
+                    benchmark,
+                )
+            end
         end
+    end
+catch e
+    if !metrics_run
+        rethrow(e)
     end
 end
 
 if profile_run
     YAML.write_file(YAML_FILENAME, profiling_results)
+end
+
+if metrics_run
+    precision_type = precision == "Float32" ? Float32 : Float64
+    configs = profiling_results["waveguide_mode_source"][hardware_key][backend][precision]
+    cfg = configs[end]
+    sim = build_waveguide_mode_sim(cfg["resolution"], cfg["wg_length"])
+    run_metrics(sim, precision_type; label="waveguide_mode (res=$(cfg["resolution"]), wg_length=$(cfg["wg_length"]))")
 end
