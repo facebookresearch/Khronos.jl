@@ -1,0 +1,65 @@
+uled_dispersive:
+  "NVIDIA A100-SXM4-80GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 0
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 40
+          timestep_rate: 0
+        - tolerance: 1.1
+          domain_scale: 1.5
+          resolution: 40
+          timestep_rate: 0
+  "NVIDIA H100":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 0
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 40
+          timestep_rate: 0
+        - tolerance: 1.1
+          domain_scale: 1.5
+          resolution: 40
+          timestep_rate: 0
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 0
+  "Apple M1 Pro":
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 0
+    Metal:
+      Float32:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 0
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 30
+          timestep_rate: 1852.1956900048413
+        - tolerance: 1.1
+          domain_scale: 1.0
+          resolution: 40
+          timestep_rate: 1910.3202879391874
+        - tolerance: 1.1
+          domain_scale: 1.5
+          resolution: 40
+          timestep_rate: 2023.5592289349395

@@ -1,68 +1,87 @@
 scattering_off_sphere:
-  NVIDIA A100-SXM4-80GB:
+  "NVIDIA A100-SXM4-80GB":
     CUDA:
       Float64:
-        - timestep_rate: 1961.7151837162314
+        - tolerance: 1.1
           resolution: 10.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 15772.803850782191
+          timestep_rate: 1961.7151837162314
+        - tolerance: 1.1
           resolution: 20.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 5458.308123079258
+          timestep_rate: 15772.803850782191
+        - tolerance: 1.1
           resolution: 10.0
           radius: 2.0
-          tolerance: 1.1
-        - timestep_rate: 43314.779933009675
+          timestep_rate: 5458.308123079258
+        - tolerance: 1.1
           resolution: 20.0
           radius: 2.0
-          tolerance: 1.1
-  NVIDIA H100:
+          timestep_rate: 43314.779933009675
+  "NVIDIA H100":
     CUDA:
       Float64:
-        - timestep_rate: 1276.1677579534114
+        - tolerance: 1.1
           resolution: 10.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 10478.948683355819
+          timestep_rate: 1276.1677579534114
+        - tolerance: 1.1
           resolution: 20.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 3501.804327824161
+          timestep_rate: 10478.948683355819
+        - tolerance: 1.1
           resolution: 10.0
           radius: 2.0
-          tolerance: 1.1
-        - timestep_rate: 29747.91329835354
+          timestep_rate: 3501.804327824161
+        - tolerance: 1.1
           resolution: 20.0
           radius: 2.0
-          tolerance: 1.1
-  Apple M1 Pro:
+          timestep_rate: 29747.91329835354
+  "Apple M1 Pro":
     CPU:
       Float64:
-        - timestep_rate: 5.62710189355293
+        - tolerance: 1.1
           resolution: 10.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 9.354205392979845
+          timestep_rate: 5.62710189355293
+        - tolerance: 1.1
           resolution: 20.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 7.402050609751705
+          timestep_rate: 9.354205392979845
+        - tolerance: 1.1
           resolution: 10.0
           radius: 2.0
-          tolerance: 1.1
+          timestep_rate: 7.402050609751705
     Metal:
       Float32:
-        - timestep_rate: 78.12158219567944
+        - tolerance: 1.1
           resolution: 10.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 195.5929033927826
+          timestep_rate: 78.12158219567944
+        - tolerance: 1.1
           resolution: 20.0
           radius: 1.0
-          tolerance: 1.1
-        - timestep_rate: 167.59020492037214
+          timestep_rate: 195.5929033927826
+        - tolerance: 1.1
           resolution: 10.0
           radius: 2.0
-          tolerance: 1.1
+          timestep_rate: 167.59020492037214
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 10.0
+          radius: 1.0
+          timestep_rate: 156.66100925106971
+        - tolerance: 1.1
+          resolution: 20.0
+          radius: 1.0
+          timestep_rate: 1251.2989415148154
+        - tolerance: 1.1
+          resolution: 10.0
+          radius: 2.0
+          timestep_rate: 425.55944861858836
+        - tolerance: 1.1
+          resolution: 20.0
+          radius: 2.0
+          timestep_rate: 2608.3637232260826

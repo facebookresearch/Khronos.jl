@@ -1,0 +1,77 @@
+waveguide_mode_source:
+  "NVIDIA A100-SXM4-80GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 25
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 40
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 40
+          timestep_rate: 0
+  "NVIDIA H100":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 25
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 40
+          timestep_rate: 0
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 40
+          timestep_rate: 0
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 0
+  "Apple M1 Pro":
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 0
+    Metal:
+      Float32:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 0
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 25
+          timestep_rate: 1845.5190586816077
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 25
+          timestep_rate: 2022.153650744477
+        - tolerance: 1.1
+          wg_length: 4.0
+          resolution: 40
+          timestep_rate: 2033.8976545411408
+        - tolerance: 1.1
+          wg_length: 10.0
+          resolution: 40
+          timestep_rate: 2089.503102810793

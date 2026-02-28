@@ -1,0 +1,65 @@
+mmi_coupler:
+  "NVIDIA A100-SXM4-80GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.5
+          timestep_rate: 0
+  "NVIDIA H100":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.5
+          timestep_rate: 0
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+  "Apple M1 Pro":
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+    Metal:
+      Float32:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 0
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 25
+          mmi_length_scale: 1.0
+          timestep_rate: 2049.8423522726225
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.0
+          timestep_rate: 2093.181204787758
+        - tolerance: 1.1
+          resolution: 30
+          mmi_length_scale: 1.5
+          timestep_rate: 2137.531916735722

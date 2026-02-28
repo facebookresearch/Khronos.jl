@@ -1,0 +1,65 @@
+bloch_photonic_crystal:
+  "NVIDIA A100-SXM4-80GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 3
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          n_cells: 3
+          timestep_rate: 0
+  "NVIDIA H100":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 3
+          timestep_rate: 0
+        - tolerance: 1.1
+          resolution: 30
+          n_cells: 3
+          timestep_rate: 0
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 0
+  "Apple M1 Pro":
+    CPU:
+      Float64:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 0
+    Metal:
+      Float32:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 0
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 1
+          timestep_rate: 40.72952638876151
+        - tolerance: 1.1
+          resolution: 20
+          n_cells: 3
+          timestep_rate: 368.5840085056524
+        - tolerance: 1.1
+          resolution: 30
+          n_cells: 3
+          timestep_rate: 1197.3714378206214

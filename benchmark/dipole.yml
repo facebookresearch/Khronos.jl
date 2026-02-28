@@ -1,5 +1,5 @@
 simple_dipole:
-  NVIDIA A100-SXM4-80GB:
+  "NVIDIA A100-SXM4-80GB":
     CUDA:
       Float64:
         - timestep_rate: 1171.2865695086832
@@ -34,7 +34,7 @@ simple_dipole:
           resolution: 50.0
           size_xyz: 10.0
           tolerance: 1.1
-  NVIDIA H100:
+  "NVIDIA H100":
     CUDA:
       Float64:
         - timestep_rate: 809.6135118832187
@@ -87,7 +87,7 @@ simple_dipole:
           resolution: 80.0
           size_xyz: 4.0
           tolerance: 1.1
-  Apple M1 Pro:
+  "Apple M1 Pro":
     CPU:
       Float64:
         - timestep_rate: 5.018273074650973
@@ -123,4 +123,39 @@ simple_dipole:
         - timestep_rate: 239.35896150300462
           resolution: 80.0
           size_xyz: 4.0
+          tolerance: 1.1
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float64:
+        - timestep_rate: 82.72355553364129
+          resolution: 10.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 657.6681003276881
+          resolution: 20.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 2608.021044066479
+          resolution: 40.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 2707.143740145313
+          resolution: 80.0
+          size_xyz: 4.0
+          tolerance: 1.1
+        - timestep_rate: 1246.383254387581
+          resolution: 10.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 2721.18194801161
+          resolution: 20.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 3024.6558697108894
+          resolution: 40.0
+          size_xyz: 10.0
+          tolerance: 1.1
+        - timestep_rate: 3115.159994131981
+          resolution: 50.0
+          size_xyz: 10.0
           tolerance: 1.1
