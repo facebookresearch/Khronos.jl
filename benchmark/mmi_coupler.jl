@@ -14,9 +14,13 @@ using KernelAbstractions
 using Logging
 using Test
 using GeometryPrimitives
-include("benchmark_utils.jl")
+if !@isdefined(BenchmarkUtils)
+    include("benchmark_utils.jl")
+end
 using .BenchmarkUtils
-include("benchmark_metrics.jl")
+if !@isdefined(BenchmarkMetrics)
+    include("benchmark_metrics.jl")
+end
 using .BenchmarkMetrics
 
 debuglogger = ConsoleLogger(stderr, Logging.Warn)
@@ -29,6 +33,7 @@ profiling_results = YAML.load_file(YAML_FILENAME)
 
 # set the appropriate backend and determine if this is a profile run
 backend, precision, profile_run, metrics_run = detect_and_set_backend()
+precision_type = precision == "Float32" ? Float32 : Float64
 
 # current hardware
 hardware_key = get_hardware_key()
@@ -129,46 +134,46 @@ function build_mmi_coupler_sim(resolution, mmi_length_scale)
     return sim
 end
 
-try
-    @testset "Benchmark: MMI coupler" begin
-        TESTNAME = "mmi_coupler"
+@testset "Benchmark: MMI coupler" begin
+    TESTNAME = "mmi_coupler"
 
-        current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
+    current_testset = profiling_results[TESTNAME][hardware_key][backend][precision]
 
-        for benchmark in current_testset
-            resolution = benchmark["resolution"]
-            tolerance = benchmark["tolerance"]
-            benchmark_rate = benchmark["timestep_rate"]
-            mmi_length_scale = benchmark["mmi_length_scale"]
+    for benchmark in current_testset
+        resolution = benchmark["resolution"]
+        tolerance = benchmark["tolerance"]
+        benchmark_rate = benchmark["timestep_rate"]
+        mmi_length_scale = benchmark["mmi_length_scale"]
 
-            @testset "resolution: $resolution | mmi_length_scale: $mmi_length_scale" begin
+        @testset "resolution: $resolution | mmi_length_scale: $mmi_length_scale" begin
 
-                sim = build_mmi_coupler_sim(resolution, mmi_length_scale)
-                timstep_rate = Khronos.run_benchmark(sim, 110)
-                benchmark_result(
-                    timstep_rate,
-                    benchmark_rate,
-                    tolerance,
-                    profile_run,
-                    benchmark,
-                )
+            sim = build_mmi_coupler_sim(resolution, mmi_length_scale)
+            timstep_rate = Khronos.run_benchmark(sim, 110)
+            benchmark_result(
+                timstep_rate,
+                benchmark_rate,
+                tolerance,
+                profile_run,
+                benchmark,
+            )
+
+            if metrics_run
+                collect_and_store_metrics(sim, precision_type, benchmark;
+                    label="mmi_coupler (res=$resolution, scale=$mmi_length_scale)")
             end
         end
     end
-catch e
-    if !metrics_run
-        rethrow(e)
+
+    # Store kernel metrics once (not per-config — registers don't change with grid size)
+    if metrics_run
+        km = collect_kernel_metrics(precision_type)
+        if !haskey(profiling_results[TESTNAME], "kernel_metrics")
+            profiling_results[TESTNAME]["kernel_metrics"] = Dict{String,Any}()
+        end
+        profiling_results[TESTNAME]["kernel_metrics"][precision] = kernel_metrics_to_dict(km)
     end
 end
 
-if profile_run
+if profile_run || metrics_run
     YAML.write_file(YAML_FILENAME, profiling_results)
-end
-
-if metrics_run
-    precision_type = precision == "Float32" ? Float32 : Float64
-    configs = profiling_results["mmi_coupler"][hardware_key][backend][precision]
-    cfg = configs[end]
-    sim = build_mmi_coupler_sim(cfg["resolution"], cfg["mmi_length_scale"])
-    run_metrics(sim, precision_type; label="mmi_coupler (res=$(cfg["resolution"]), scale=$(cfg["mmi_length_scale"]))")
 end

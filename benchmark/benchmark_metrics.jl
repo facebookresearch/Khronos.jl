@@ -12,7 +12,8 @@ import Khronos
 using CUDA
 
 export collect_phase_timing, collect_kernel_metrics, compute_bandwidth,
-       collect_memory_info, print_metrics_summary, run_metrics
+       collect_memory_info, print_metrics_summary, run_metrics,
+       collect_and_store_metrics, kernel_metrics_to_dict
 
 # ── GPU peak bandwidth detection ────────────────────────────────────────────
 
@@ -348,7 +349,7 @@ Collect and print all metrics for a simulation.
 function run_metrics(sim, precision_type::Type{T}; label::String="", n_steps::Int=50) where {T}
     if !CUDA.functional()
         println("Metrics collection requires CUDA backend. Skipping.")
-        return
+        return nothing
     end
 
     phase_timing = collect_phase_timing(sim, n_steps)
@@ -356,6 +357,83 @@ function run_metrics(sim, precision_type::Type{T}; label::String="", n_steps::In
     bandwidth = compute_bandwidth(sim, phase_timing, precision_type)
     memory_info = collect_memory_info()
 
+    print_metrics_summary(sim, phase_timing, kernel_metrics, bandwidth, memory_info; label=label)
+    return (phase_timing=phase_timing, kernel_metrics=kernel_metrics,
+            bandwidth=bandwidth, memory_info=memory_info)
+end
+
+# ── YAML storage helpers ────────────────────────────────────────────────────
+
+"""
+    kernel_metrics_to_dict(kernel_metrics)
+
+Convert kernel metrics to a Dict suitable for YAML serialization.
+Stored once per hardware/backend/precision (not per-config — registers don't change with grid size).
+"""
+function kernel_metrics_to_dict(kernel_metrics::Vector{KernelInfo})
+    d = Dict{String,Any}()
+    for ki in kernel_metrics
+        ki.registers < 0 && continue
+        d[ki.name] = Dict{String,Any}(
+            "registers"     => ki.registers,
+            "max_threads"   => ki.max_threads,
+            "shared_mem_bytes" => ki.shared_mem,
+            "local_mem_bytes"  => ki.local_mem,
+            "occupancy_pct" => ki.occupancy_pct,
+        )
+    end
+    return d
+end
+
+"""
+    collect_and_store_metrics(sim, precision_type, benchmark_dict; n_steps=50, label="")
+
+Collect metrics for a simulation config and store them into the benchmark_dict
+(the per-config YAML dict that already holds timestep_rate, resolution, etc.).
+
+Stored fields (units noted in key names):
+  - phase_step_H_ms, phase_step_E_ms, phase_sources_ms, phase_monitors_ms, phase_total_ms
+  - bandwidth_H_update_GBps, bandwidth_E_update_GBps, bandwidth_peak_GBps
+  - bandwidth_H_pct_peak, bandwidth_E_pct_peak
+  - gpu_memory_used_GB
+  - grid_Nx, grid_Ny, grid_Nz, grid_total_voxels
+"""
+function collect_and_store_metrics(sim, precision_type::Type{T}, benchmark_dict::Dict;
+                                   n_steps::Int=50, label::String="") where {T}
+    if !CUDA.functional()
+        println("Metrics collection requires CUDA backend. Skipping.")
+        return
+    end
+
+    phase_timing = collect_phase_timing(sim, n_steps)
+    bandwidth = compute_bandwidth(sim, phase_timing, precision_type)
+    memory_info = collect_memory_info()
+
+    # Store phase timing (ms/step)
+    benchmark_dict["phase_step_H_ms"] = round(phase_timing.step_H_ms, digits=3)
+    benchmark_dict["phase_step_E_ms"] = round(phase_timing.step_E_ms, digits=3)
+    benchmark_dict["phase_sources_ms"] = round(phase_timing.src_H_ms + phase_timing.src_E_ms, digits=3)
+    benchmark_dict["phase_monitors_ms"] = round(phase_timing.mon_H_ms + phase_timing.mon_E_ms, digits=3)
+    benchmark_dict["phase_total_ms"] = round(phase_timing.total_ms, digits=3)
+
+    # Store achieved bandwidth (GB/s)
+    benchmark_dict["bandwidth_H_update_GBps"] = round(bandwidth.bh_gbps, digits=1)
+    benchmark_dict["bandwidth_E_update_GBps"] = round(bandwidth.de_gbps, digits=1)
+    benchmark_dict["bandwidth_peak_GBps"] = round(bandwidth.peak_gbps, digits=1)
+    benchmark_dict["bandwidth_H_pct_peak"] = round(bandwidth.bh_pct_peak, digits=1)
+    benchmark_dict["bandwidth_E_pct_peak"] = round(bandwidth.de_pct_peak, digits=1)
+
+    # Store memory (GB)
+    benchmark_dict["gpu_memory_used_GB"] = round(memory_info.used_gb, digits=1)
+
+    # Store grid dimensions
+    benchmark_dict["grid_Nx"] = sim.Nx
+    benchmark_dict["grid_Ny"] = sim.Ny
+    benchmark_dict["grid_Nz"] = sim.Nz
+    benchmark_dict["grid_total_voxels"] = sim.Nx * sim.Ny * sim.Nz
+
+    # Print summary
+    kernel_metrics = collect_kernel_metrics(precision_type)
     print_metrics_summary(sim, phase_timing, kernel_metrics, bandwidth, memory_info; label=label)
 end
 
