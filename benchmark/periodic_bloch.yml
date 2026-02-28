@@ -77,60 +77,60 @@ bloch_photonic_crystal:
   "NVIDIA A100-SXM4-80GB":
     CUDA:
       Float64:
-        - tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 1
-          timestep_rate: 0
-        - tolerance: 1.1
+          tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 3
-          timestep_rate: 0
-        - tolerance: 1.1
+          tolerance: 1.1
+        - timestep_rate: 0
           resolution: 30
           n_cells: 3
-          timestep_rate: 0
+          tolerance: 1.1
   "NVIDIA H100":
     CUDA:
       Float64:
-        - tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 1
-          timestep_rate: 0
-        - tolerance: 1.1
+          tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 3
-          timestep_rate: 0
-        - tolerance: 1.1
+          tolerance: 1.1
+        - timestep_rate: 0
           resolution: 30
           n_cells: 3
-          timestep_rate: 0
+          tolerance: 1.1
     CPU:
       Float64:
-        - tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 1
-          timestep_rate: 0
+          tolerance: 1.1
   "Apple M1 Pro":
     CPU:
       Float64:
-        - tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 1
-          timestep_rate: 0
+          tolerance: 1.1
     Metal:
       Float32:
-        - tolerance: 1.1
+        - timestep_rate: 0
           resolution: 20
           n_cells: 1
-          timestep_rate: 0
+          tolerance: 1.1
   "NVIDIA GH200 480GB":
     CUDA:
       Float32:
         - bandwidth_E_update_GBps: 22.1
           phase_total_ms: 0.181
           phase_sources_ms: 0.02
-          timestep_rate: 35.78740715108479
           gpu_memory_used_GB: 4.2
+          timestep_rate: 35.78740715108479
           phase_step_E_ms: 0.078
           phase_step_H_ms: 0.078
           grid_total_voxels: 36000
@@ -148,8 +148,8 @@ bloch_photonic_crystal:
         - bandwidth_E_update_GBps: 135.0
           phase_total_ms: 0.283
           phase_sources_ms: 0.021
-          timestep_rate: 322.02560556585036
           gpu_memory_used_GB: 4.3
+          timestep_rate: 322.02560556585036
           phase_step_E_ms: 0.115
           phase_step_H_ms: 0.141
           grid_total_voxels: 324000
@@ -167,8 +167,8 @@ bloch_photonic_crystal:
         - bandwidth_E_update_GBps: 201.5
           phase_total_ms: 0.656
           phase_sources_ms: 0.023
-          timestep_rate: 1092.1678288906562
           gpu_memory_used_GB: 4.6
+          timestep_rate: 1092.1678288906562
           phase_step_E_ms: 0.261
           phase_step_H_ms: 0.366
           grid_total_voxels: 1093500
@@ -184,32 +184,32 @@ bloch_photonic_crystal:
           bandwidth_E_pct_peak: 5.0
           tolerance: 1.1
       Float64:
-        - bandwidth_E_update_GBps: 42.9
-          phase_total_ms: 0.184
+        - bandwidth_E_update_GBps: 45.3
+          phase_total_ms: 0.173
           phase_sources_ms: 0.019
+          timestep_rate: 35.81270136424872
           gpu_memory_used_GB: 6.6
-          timestep_rate: 35.09217093015959
-          phase_step_E_ms: 0.081
-          phase_step_H_ms: 0.079
+          phase_step_E_ms: 0.076
+          phase_step_H_ms: 0.073
           grid_total_voxels: 36000
           phase_monitors_ms: 0.005
           resolution: 20
-          bandwidth_H_pct_peak: 0.8
+          bandwidth_H_pct_peak: 0.9
           n_cells: 1
           grid_Nx: 20
           grid_Ny: 20
-          bandwidth_H_update_GBps: 32.9
+          bandwidth_H_update_GBps: 35.4
           grid_Nz: 90
           bandwidth_peak_GBps: 4022.8
           bandwidth_E_pct_peak: 1.1
           tolerance: 1.1
-        - bandwidth_E_update_GBps: 215.4
-          phase_total_ms: 0.339
-          phase_sources_ms: 0.021
+        - bandwidth_E_update_GBps: 215.8
+          phase_total_ms: 0.334
+          phase_sources_ms: 0.02
+          timestep_rate: 190.55901932436922
           gpu_memory_used_GB: 6.7
-          timestep_rate: 314.9730782869897
           phase_step_E_ms: 0.144
-          phase_step_H_ms: 0.168
+          phase_step_H_ms: 0.164
           grid_total_voxels: 324000
           phase_monitors_ms: 0.006
           resolution: 20
@@ -217,27 +217,27 @@ bloch_photonic_crystal:
           n_cells: 3
           grid_Nx: 60
           grid_Ny: 60
-          bandwidth_H_update_GBps: 139.2
+          bandwidth_H_update_GBps: 142.1
           grid_Nz: 90
           bandwidth_peak_GBps: 4022.8
           bandwidth_E_pct_peak: 5.4
           tolerance: 1.1
-        - bandwidth_E_update_GBps: 289.5
-          phase_total_ms: 0.871
-          phase_sources_ms: 0.024
-          gpu_memory_used_GB: 7.3
-          timestep_rate: 1058.9451404585827
-          phase_step_E_ms: 0.363
-          phase_step_H_ms: 0.476
+        - bandwidth_E_update_GBps: 292.5
+          phase_total_ms: 0.858
+          phase_sources_ms: 0.023
+          timestep_rate: 1080.5121242390546
+          gpu_memory_used_GB: 7.2
+          phase_step_E_ms: 0.359
+          phase_step_H_ms: 0.468
           grid_total_voxels: 1093500
           phase_monitors_ms: 0.008
           resolution: 30
-          bandwidth_H_pct_peak: 4.1
+          bandwidth_H_pct_peak: 4.2
           n_cells: 3
           grid_Nx: 90
           grid_Ny: 90
-          bandwidth_H_update_GBps: 165.3
+          bandwidth_H_update_GBps: 168.3
           grid_Nz: 135
           bandwidth_peak_GBps: 4022.8
-          bandwidth_E_pct_peak: 7.2
+          bandwidth_E_pct_peak: 7.3
           tolerance: 1.1

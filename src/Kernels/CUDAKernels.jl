@@ -22,7 +22,7 @@ function _cuda_fused_BH_kernel!(
     Ex, Ey, Ez,     # source E fields (read-only, stencil)
     Hx, Hy, Hz,     # H fields (read-write): H_new = H_old + μ⁻¹·Δt·curl(E)
     m_dt_dx, m_dt_dy, m_dt_dz,   # μ⁻¹ · Δt/Δ{x,y,z}
-    iNx,
+    iNx, iNy,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -48,7 +48,7 @@ function _cuda_fused_DE_kernel!(
     Ex, Ey, Ez,     # E fields (read-write): E_new = E_old + ε⁻¹·Δt·curl(H)
     eps_inv_x, eps_inv_y, eps_inv_z,  # per-voxel ε⁻¹ (read-only)
     dt_dx, dt_dy, dt_dz,
-    iNx,
+    iNx, iNy,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -78,7 +78,7 @@ function _cuda_fused_DE_scalar_kernel!(
     Ex, Ey, Ez,
     eps_inv,         # scalar ε⁻¹
     dt_dx, dt_dy, dt_dz,
-    iNx,
+    iNx, iNy,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -132,7 +132,7 @@ function _cuda_pml_BH_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,  # PML σ 1D (read, may be dummy)
     m_inv,               # scalar μ⁻¹
     dt_dx, dt_dy, dt_dz,
-    iNx,                 # x-dimension (Int32)
+    iNx, iNy,                 # x-dimension (Int32)
     pml_x::Int32, pml_y::Int32, pml_z::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
@@ -254,7 +254,7 @@ function _cuda_pml_DE_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,
     eps_inv_x, eps_inv_y, eps_inv_z,  # per-voxel ε⁻¹
     dt_dx, dt_dy, dt_dz,
-    iNx,
+    iNx, iNy,
     pml_x::Int32, pml_y::Int32, pml_z::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
@@ -363,7 +363,7 @@ function _cuda_pml_DE_scalar_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,
     eps_inv,             # scalar ε⁻¹
     dt_dx, dt_dy, dt_dz,
-    iNx,
+    iNx, iNy,
     pml_x::Int32, pml_y::Int32, pml_z::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
@@ -489,7 +489,7 @@ function _cuda_pml_BH_x_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays (always valid, zero-filled if no PML)
     m_inv,                           # scalar μ⁻¹
     dt_dy, dt_dz,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -548,7 +548,7 @@ function _cuda_pml_BH_y_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
     m_inv,                           # scalar μ⁻¹
     dt_dz, dt_dx,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -605,7 +605,7 @@ function _cuda_pml_BH_z_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
     m_inv,                           # scalar μ⁻¹
     dt_dx, dt_dy,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -664,7 +664,7 @@ function _cuda_pml_DE_x_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
     eps_x,                           # ε⁻¹ (scalar or per-voxel array)
     dt_dy, dt_dz,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -717,7 +717,7 @@ function _cuda_pml_DE_y_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
     eps_y,                           # ε⁻¹ (scalar or per-voxel array)
     dt_dz, dt_dx,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y
@@ -769,7 +769,7 @@ function _cuda_pml_DE_z_kernel!(
     σ_pml_x, σ_pml_y, σ_pml_z,     # 1D σ arrays
     eps_z,                           # ε⁻¹ (scalar or per-voxel array)
     dt_dx, dt_dy,                    # grid spacing ratios
-    iNx::Int32,
+    iNx::Int32, iNy::Int32,
 )
     ix_0 = (blockIdx().x - Int32(1)) * blockDim().x + threadIdx().x
     iy_0 = blockIdx().y

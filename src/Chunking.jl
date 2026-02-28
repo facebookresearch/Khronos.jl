@@ -778,11 +778,21 @@ If an `Int`, uses that number of chunks via BSP splitting.
 function plan_chunks(sim::SimulationData)::ChunkPlan
     nc = sim.num_chunks
 
-    # PML grid split: activated when user requests :auto chunking.
-    # Splits the domain at PML boundaries to separate interior (PML-free)
-    # chunks from boundary (PML) chunks, enabling the fast fused kernel
-    # path for the interior region.
-    if nc === :auto && !isnothing(sim.boundaries)
+    # Single-chunk PML: per-component kernels use σ-skipping for interior voxels
+    # (σ==0 → fast path H += μ⁻¹·K, identical to fused interior kernel).
+    # This eliminates the 27-chunk PML grid decomposition (~79 kernel launches
+    # per half-step) in favor of 3 per-component launches with warp-level branching.
+    if nc === :auto && !isnothing(sim.boundaries) && !is_distributed()
+        vol = Volume(center = sim.cell_center, size = sim.cell_size)
+        gv = GridVolume(sim, Center())
+        physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries)
+        spec = ChunkSpec(1, vol, gv, physics, Int[], 0)
+        return ChunkPlan([spec], Tuple{Int,Int,Int}[], 1)
+    end
+
+    # Legacy PML grid split for distributed (MPI) mode: separate interior from
+    # PML chunks for per-rank load balancing across multiple GPUs.
+    if nc === :auto && !isnothing(sim.boundaries) && is_distributed()
         return _plan_chunks_pml_grid(sim)
     end
 

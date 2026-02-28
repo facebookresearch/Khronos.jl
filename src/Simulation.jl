@@ -220,6 +220,21 @@ function prepare_simulation!(sim::SimulationData)
     sim._cached_dft_kernel = update_dft_monitor!(backend_engine, (wg,))
     sim._cached_dft_chunk_kernel = update_dft_monitor_chunk!(backend_engine, (wg,))
 
+    # P.3: Cache CUDA dispatch constants (avoid per-timestep ENV parsing and recomputation)
+    sim._cached_grid_is_uniform = _grid_is_uniform(sim)
+    if sim._cached_grid_is_uniform
+        sim._cached_dt_dx = backend_number(sim.Δt / sim.Δx)
+        sim._cached_dt_dy = backend_number(sim.Δt / sim.Δy)
+        sim._cached_dt_dz = backend_number(sim.Δt / sim.Δz)
+    else
+        sim._cached_dt_dx = zero(backend_number)
+        sim._cached_dt_dy = zero(backend_number)
+        sim._cached_dt_dz = zero(backend_number)
+    end
+    cuda_wg_total = parse(Int, get(ENV, "KHRONOS_CUDA_WORKGROUP_SIZE", "256"))
+    sim._cached_cuda_wg_x = Int32(32)
+    sim._cached_cuda_wg_y = Int32(cld(cuda_wg_total, 32))
+
     return
 end
 

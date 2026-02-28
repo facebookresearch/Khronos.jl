@@ -161,6 +161,7 @@ function collect_kernel_metrics(precision_type::Type{T}) where {T}
     arr = CUDA.zeros(T, n + 2, n + 2, n + 2)
     sigma_arr = CUDA.zeros(T, n + 2)
     iNx = Int32(n)
+    iNy = Int32(n)
     s = T(0.01)
     wg = 256  # default workgroup size
 
@@ -168,23 +169,23 @@ function collect_kernel_metrics(precision_type::Type{T}) where {T}
 
     kernel_configs = [
         ("BH interior", () -> @cuda(launch=false, Khronos._cuda_fused_BH_kernel!(
-            arr, arr, arr, arr, arr, arr, s, s, s, iNx))),
+            arr, arr, arr, arr, arr, arr, s, s, s, iNx, iNy))),
         ("DE per-voxel eps", () -> @cuda(launch=false, Khronos._cuda_fused_DE_kernel!(
-            arr, arr, arr, arr, arr, arr, arr, arr, arr, s, s, s, iNx))),
+            arr, arr, arr, arr, arr, arr, arr, arr, arr, s, s, s, iNx, iNy))),
         ("DE scalar eps", () -> @cuda(launch=false, Khronos._cuda_fused_DE_scalar_kernel!(
-            arr, arr, arr, arr, arr, arr, s, s, s, s, iNx))),
+            arr, arr, arr, arr, arr, arr, s, s, s, s, iNx, iNy))),
         ("PML BH", () -> @cuda(launch=false, Khronos._cuda_pml_BH_kernel!(
             arr, arr, arr, arr, arr, arr, arr, arr, arr,
             arr, arr, arr, arr, arr, arr, sigma_arr, sigma_arr, sigma_arr,
-            s, s, s, s, iNx, Int32(1), Int32(1), Int32(1)))),
+            s, s, s, s, iNx, iNy, Int32(1), Int32(1), Int32(1)))),
         ("PML DE per-voxel", () -> @cuda(launch=false, Khronos._cuda_pml_DE_kernel!(
             arr, arr, arr, arr, arr, arr, arr, arr, arr,
             arr, arr, arr, arr, arr, arr, sigma_arr, sigma_arr, sigma_arr,
-            arr, arr, arr, s, s, s, iNx, Int32(1), Int32(1), Int32(1)))),
+            arr, arr, arr, s, s, s, iNx, iNy, Int32(1), Int32(1), Int32(1)))),
         ("PML DE scalar", () -> @cuda(launch=false, Khronos._cuda_pml_DE_scalar_kernel!(
             arr, arr, arr, arr, arr, arr, arr, arr, arr,
             arr, arr, arr, arr, arr, arr, sigma_arr, sigma_arr, sigma_arr,
-            s, s, s, s, iNx, Int32(1), Int32(1), Int32(1)))),
+            s, s, s, s, iNx, iNy, Int32(1), Int32(1), Int32(1)))),
     ]
 
     for (name, compile_fn) in kernel_configs

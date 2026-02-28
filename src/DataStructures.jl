@@ -778,6 +778,14 @@ end
     # Multi-stream concurrent chunk dispatch
     _chunk_streams::Vector{Any} = Any[]
     _use_multi_stream::Bool = false
+
+    # Cached CUDA dispatch constants (computed once in prepare_simulation!)
+    _cached_cuda_wg_x::Int32 = Int32(32)
+    _cached_cuda_wg_y::Int32 = Int32(8)
+    _cached_dt_dx::Any = nothing
+    _cached_dt_dy::Any = nothing
+    _cached_dt_dz::Any = nothing
+    _cached_grid_is_uniform::Bool = false
 end
 
 # Convenience wrapper
