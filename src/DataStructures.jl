@@ -786,6 +786,7 @@ end
     _cached_dt_dy::Any = nothing
     _cached_dt_dz::Any = nothing
     _cached_grid_is_uniform::Bool = false
+    _cached_dummy_sigma::Any = nothing  # Pre-allocated zero σ for 2D PML (avoids alloc during graph capture)
 end
 
 # Convenience wrapper

@@ -273,6 +273,12 @@ function prepare_simulation!(sim::SimulationData)
     sim._cached_cuda_wg_x = Int32(32)
     sim._cached_cuda_wg_y = Int32(cld(cuda_wg_total, 32))
 
+    # Pre-allocate a dummy zero σ array for PML kernels on axes without PML.
+    # This avoids GPU allocation during step! (which breaks CUDA Graph capture).
+    if backend_engine isa CUDABackend
+        sim._cached_dummy_sigma = CUDA.zeros(backend_number, 1)
+    end
+
     return
 end
 

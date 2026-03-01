@@ -103,19 +103,33 @@ function _try_capture_graphs!(sim::SimulationData)
     _fields_are_complex(sim) && return false
     # Disable graph capture when multi-stream is active — standard capture
     # doesn't support cross-stream operations without STREAM_CAPTURE_MODE_RELAXED.
-    # The per-component kernel speedup compensates for lack of graph replay.
     sim._use_multi_stream && return false
+
+    # Pre-compile all kernel variants by running one step outside capture.
+    # This ensures JIT compilation (which allocates GPU memory) doesn't
+    # invalidate the subsequent graph capture recording pass.
+    step_H_fused!(sim)
+    exchange_halos!(sim, :H)
+    step_E_fused!(sim)
+    exchange_halos!(sim, :E)
+    CUDA.synchronize()
 
     try
         graph_H = CUDA.capture(; throw_error=false) do
             step_H_fused!(sim)
         end
-        isnothing(graph_H) && return false
+        if isnothing(graph_H)
+            @warn("CUDA Graph capture failed for step_H_fused!")
+            return false
+        end
 
         graph_E = CUDA.capture(; throw_error=false) do
             step_E_fused!(sim)
         end
-        isnothing(graph_E) && return false
+        if isnothing(graph_E)
+            @warn("CUDA Graph capture failed for step_E_fused!")
+            return false
+        end
 
         sim._cuda_graph_exec_H = CUDA.instantiate(graph_H)
         sim._cuda_graph_exec_E = CUDA.instantiate(graph_E)
@@ -125,7 +139,7 @@ function _try_capture_graphs!(sim::SimulationData)
         end
         return true
     catch e
-        @warn("CUDA Graph capture failed, continuing without graphs: $e")
+        @warn("CUDA Graph capture failed: $e\n$(sprint(showerror, e, catch_backtrace()))")
         return false
     end
 end
@@ -205,7 +219,7 @@ function step_H_fused!(sim::SimulationData)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), Int(cuda_wg_x) * Int(cuda_wg_y))
             dummy3d = f.fBx
-            _σ(σ) = isnothing(σ) ? CUDA.zeros(backend_number, 1) : σ
+            _σ(σ) = isnothing(σ) ? sim._cached_dummy_sigma : σ
             # PML flags: 1 if PML active on that axis, 0 otherwise
             _pml_flag(σ) = isnothing(σ) ? Int32(0) : Int32(1)
 
@@ -359,7 +373,7 @@ function step_E_fused!(sim::SimulationData)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), Int(cuda_wg_x) * Int(cuda_wg_y))
             dummy3d = f.fDx
-            _σ(σ) = isnothing(σ) ? CUDA.zeros(backend_number, 1) : σ
+            _σ(σ) = isnothing(σ) ? sim._cached_dummy_sigma : σ
             _pml_flag(σ) = isnothing(σ) ? Int32(0) : Int32(1)
 
             # Resolve per-voxel or scalar ε⁻¹ for each component
