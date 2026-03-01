@@ -232,11 +232,13 @@ function allocate_fields_TM(sim::SimulationData)
 end
 
 """
-    init_fields(sim::SimulationData, ::Union{Type{TwoD},Type{ThreeD}})
+    init_fields(sim::SimulationData, dim)
 
-Allocate all the necessary field components for a full 3D simulation.
+Allocate all the necessary field components for the simulation dimensionality.
+For 2D simulations we still allocate all 6 field components — the GPU kernels
+require uniform array types.  Unused components remain zero.
 """
-function init_fields(sim::SimulationData, ::Union{Type{ThreeD}})
+function init_fields(sim::SimulationData, ::Union{Type{ThreeD},Type{TwoD},Type{TwoD_TE},Type{TwoD_TM}})
     sim.fields =
         Fields{AbstractArray}(; allocate_fields_TE(sim)..., allocate_fields_TM(sim)...)
 end

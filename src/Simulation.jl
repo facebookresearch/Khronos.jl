@@ -42,14 +42,43 @@ those when determining the 2D polarization.
 function get_sim_dims(sim::SimulationData)
     if sim.ndims == 3
         sim.dimensionality = ThreeD
-    elseif (contains_TE_sources(sim) && !contains_TM_sources(sim))
+    elseif (_contains_TE_sources(sim) && !_contains_TM_sources(sim))
         sim.dimensionality = TwoD_TE
-    elseif (!contains_TE_sources(sim) && contains_TM_sources(sim))
+    elseif (!_contains_TE_sources(sim) && _contains_TM_sources(sim))
         sim.dimensionality = TwoD_TM
     else
         sim.dimensionality = TwoD
     end
     #TODO add support for cylindrical coordinates
+end
+
+# TE (for z-normal 2D): fields Hz, Ex, Ey  → source components are E-field in-plane or H-field normal
+# TM (for z-normal 2D): fields Ez, Hx, Hy  → source component is Ez
+const _TE_COMPONENTS = Set{Type}([Hx, Hy, Hz, Ex, Ey])
+const _TM_COMPONENTS = Set{Type}([Ez, Hx, Hy, Hz])
+
+function _contains_TE_sources(sim::SimulationData)
+    for src in sim.sources
+        for comp in get_source_components(src)
+            # TE sources excite in-plane E (Ex, Ey) or out-of-plane H (Hz)
+            if typeof(comp) in (Ex, Ey, Hz)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function _contains_TM_sources(sim::SimulationData)
+    for src in sim.sources
+        for comp in get_source_components(src)
+            # TM sources excite out-of-plane E (Ez) or in-plane H (Hx, Hy)
+            if typeof(comp) in (Ez, Hx, Hy)
+                return true
+            end
+        end
+    end
+    return false
 end
 
 """
