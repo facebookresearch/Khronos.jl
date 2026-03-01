@@ -163,9 +163,12 @@ Create an eigenmode adjoint source using the mode profiles from the forward
 run's ModeMonitor.  The adjoint source propagates in the opposite direction
 by negating the H-field components of the mode profile.
 
-For single-frequency: `amplitude` is a scalar dJ * scale.
-For multi-frequency:  `amplitude` is a vector of per-frequency weights
-                      from FilteredSource nodes.
+For single-frequency: `amplitude` is a scalar dJ * scale, and the spatial
+profile is the single mode profile at that frequency.
+
+For multi-frequency: `amplitude` is a vector of per-frequency weights
+(FilteredSource nodes row).  The spatial profile is the weighted sum
+of per-frequency mode profiles, accounting for modal dispersion.
 """
 function _create_eigenmode_adjoint_source(
     oq::EigenmodeCoefficient,
@@ -180,10 +183,6 @@ function _create_eigenmode_adjoint_source(
 
     md = oq.monitor.monitor_data
 
-    # Use the first frequency's mode profile for the spatial shape.
-    # (For broadband, FilteredSource handles the per-frequency weighting.)
-    mode = md.mode_profiles[1]
-
     # Expand 2D mode fields to 3D with singleton along normal axis
     function _expand(f)
         if ndims(f) == 2
@@ -194,22 +193,48 @@ function _create_eigenmode_adjoint_source(
         return f
     end
 
-    # Build the fields dict.  Negate H-fields to reverse propagation direction.
+    # H-field sign: negate to reverse propagation direction.
     # For backward mode (oq.forward == false), the forward mode profile is
     # already backward-propagating, so the adjoint should be forward → no negate.
     h_sign = oq.forward ? -1.0 : 1.0
 
-    fields = Dict{Field, AbstractArray}(
-        Ex() => _expand(ComplexF64.(mode.Ex)),
-        Ey() => _expand(ComplexF64.(mode.Ey)),
-        Ez() => _expand(ComplexF64.(mode.Ez)),
-        Hx() => _expand(ComplexF64.(h_sign .* mode.Hx)),
-        Hy() => _expand(ComplexF64.(h_sign .* mode.Hy)),
-        Hz() => _expand(ComplexF64.(h_sign .* mode.Hz)),
-    )
-
-    # Scalar amplitude for the source (time_src handles temporal variation)
-    amp = amplitude isa AbstractVector ? amplitude[1] : amplitude
+    if amplitude isa AbstractVector && length(amplitude) == length(md.mode_profiles)
+        # Multi-frequency: weighted sum of per-frequency mode profiles.
+        # This accounts for modal dispersion (profile shape varies with frequency).
+        weights = ComplexF64.(amplitude)
+        mode0 = md.mode_profiles[1]
+        fields = Dict{Field, AbstractArray}(
+            Ex() => _expand(zeros(ComplexF64, size(mode0.Ex))),
+            Ey() => _expand(zeros(ComplexF64, size(mode0.Ey))),
+            Ez() => _expand(zeros(ComplexF64, size(mode0.Ez))),
+            Hx() => _expand(zeros(ComplexF64, size(mode0.Hx))),
+            Hy() => _expand(zeros(ComplexF64, size(mode0.Hy))),
+            Hz() => _expand(zeros(ComplexF64, size(mode0.Hz))),
+        )
+        for (fi, mode) in enumerate(md.mode_profiles)
+            w = weights[fi]
+            w == 0 && continue
+            fields[Ex()] .+= w .* _expand(ComplexF64.(mode.Ex))
+            fields[Ey()] .+= w .* _expand(ComplexF64.(mode.Ey))
+            fields[Ez()] .+= w .* _expand(ComplexF64.(mode.Ez))
+            fields[Hx()] .+= (w * h_sign) .* _expand(ComplexF64.(mode.Hx))
+            fields[Hy()] .+= (w * h_sign) .* _expand(ComplexF64.(mode.Hy))
+            fields[Hz()] .+= (w * h_sign) .* _expand(ComplexF64.(mode.Hz))
+        end
+        amp = 1.0  # per-frequency weighting is baked into the spatial profile
+    else
+        # Single frequency: use the one mode profile directly
+        mode = md.mode_profiles[1]
+        fields = Dict{Field, AbstractArray}(
+            Ex() => _expand(ComplexF64.(mode.Ex)),
+            Ey() => _expand(ComplexF64.(mode.Ey)),
+            Ez() => _expand(ComplexF64.(mode.Ez)),
+            Hx() => _expand(ComplexF64.(h_sign .* mode.Hx)),
+            Hy() => _expand(ComplexF64.(h_sign .* mode.Hy)),
+            Hz() => _expand(ComplexF64.(h_sign .* mode.Hz)),
+        )
+        amp = amplitude isa AbstractVector ? amplitude[1] : amplitude
+    end
 
     return EquivalentSource(
         time_profile = time_src,
