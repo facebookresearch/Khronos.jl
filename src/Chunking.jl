@@ -1032,8 +1032,8 @@ function _slice_chunk_geometry(sim::SimulationData, spec::ChunkSpec)
         dims = _get_chunk_component_voxel_count(sim, component, chunk_gv)
         s = chunk_gv.start_idx
         if ndims == 2
-            # 2D: use regular indexing (small arrays)
-            return global_arr[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1)]
+            # 2D: slice as 3D with z=1:1 to keep arrays 3D for kernel compatibility
+            return global_arr[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1), 1:size(global_arr,3)]
         else
             return _cuda_slice_3d(global_arr, s, dims)
         end
@@ -1045,7 +1045,7 @@ function _slice_chunk_geometry(sim::SimulationData, spec::ChunkSpec)
         s = chunk_gv.start_idx
         dims = (chunk_gv.Nx, chunk_gv.Ny, max(1, chunk_gv.Nz))
         if ndims == 2
-            chi3_sliced = gd.chi3[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1)]
+            chi3_sliced = gd.chi3[s[1]:(s[1]+dims[1]-1), s[2]:(s[2]+dims[2]-1), 1:size(gd.chi3,3)]
         else
             chi3_sliced = _cuda_slice_3d(gd.chi3, s, dims)
         end

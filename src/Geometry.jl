@@ -273,10 +273,10 @@ end
         point = SVector(xs[ix], ys[iy], zs[1])
         if point ∈ shape
             if has_perm
-                @inbounds perm_arr[ix, iy] = perm_val
+                @inbounds perm_arr[ix, iy, 1] = perm_val
             end
             if has_σ
-                @inbounds σ_arr[ix, iy] = σ_val
+                @inbounds σ_arr[ix, iy, 1] = σ_val
             end
         end
     end
@@ -438,10 +438,10 @@ function _write_geometry_2d!(
         index = _find_shape(kdtree, point, geometry)
         obj = isnothing(index) ? nothing : geometry[index]
         if !isnothing(perm_arr)
-            @inbounds perm_arr[ix, iy] = get_perm_inv(obj, f)
+            @inbounds perm_arr[ix, iy, 1] = get_perm_inv(obj, f)
         end
         if !isnothing(σ_arr)
-            @inbounds σ_arr[ix, iy] = get_σ(obj, f)
+            @inbounds σ_arr[ix, iy, 1] = get_σ(obj, f)
         end
     end
 end
@@ -454,12 +454,11 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
     end
 
     T = backend_number
-    # Use undef allocation instead of zeros() to avoid redundant zeroing.
-    # The arrays are filled with the free-space default (1.0 for permittivity,
-    # 0.0 for conductivity) inside each task, distributing page faults across
-    # all threads for much faster initialization.
+    # Always allocate 3D arrays even for 2D simulations, because the GPU
+    # kernels use 3D indexing.  get_component_voxel_count already clamps
+    # Nz >= 1, so the z-dimension is at least 1 voxel.
     _alloc(need, comp) = need ?
-        Array{T}(undef, get_component_voxel_count(sim, comp)[1:sim.ndims]...) : nothing
+        Array{T}(undef, get_component_voxel_count(sim, comp)...) : nothing
 
     ε_inv_x = _alloc(needs_perm(geometry, Ex()), Ex())
     ε_inv_y = _alloc(needs_perm(geometry, Ey()), Ey())

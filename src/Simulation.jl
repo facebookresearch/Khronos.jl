@@ -94,7 +94,7 @@ function prepare_simulation!(sim::SimulationData)
         return
     end
 
-    num_voxels = sim.Nx * sim.Ny * sim.Nz
+    num_voxels = sim.Nx * sim.Ny * max(1, sim.Nz)
     if !is_distributed() || is_root()
         @info("Preparing simulation object ($(sim.Nx)×$(sim.Ny)×$(sim.Nz) = $(num_voxels) voxels)...")
     end
@@ -296,7 +296,7 @@ function run(
         prepare_simulation!(sim)
     end
 
-    num_voxels = sim.Nx * sim.Ny * sim.Nz
+    num_voxels = sim.Nx * sim.Ny * max(1, sim.Nz)
     step_start = sim.timestep
     if !is_distributed() || is_root()
         @info("Starting simulation...")
@@ -499,12 +499,12 @@ function run_benchmark(sim::SimulationData, until::Int)
         @info("===========================================")
         @info("Total number of iterations: $until.")
         @info("Total simulation time: $time_s seconds.")
-        num_voxels = sim.Nx * sim.Ny * sim.Nz
+        num_voxels = sim.Nx * sim.Ny * max(1, sim.Nz)
         steprate = num_voxels * (until - 10) / time_s / 1e6
         @info("Simulation speed:  $steprate MCells/S.")
         @info("===========================================")
     else
-        num_voxels = sim.Nx * sim.Ny * sim.Nz
+        num_voxels = sim.Nx * sim.Ny * max(1, sim.Nz)
         steprate = num_voxels * (until - 10) / time_s / 1e6
     end
 

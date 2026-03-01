@@ -17,20 +17,25 @@ get_direction_index(::Z) = 3
     get_component_voxel_count(sim, component)
 
 For a given component, get the number of grid voxels throughout the domain.
+
+In 2D (Nz=0), we clamp the z-dimension to at least 1 so that arrays get
+z-size ≥ 3 after ghost cells (+2), satisfying the stencil requirement
+`A[ix, iy, iz+1]`.  The z-derivative contribution is zeroed out by
+`Δt/Δz = Δt/Inf = 0`, so the extra z-plane stays at zero.
 """
 get_component_voxel_count(sim::SimulationData, ::Union{Ex,Dx,εx}) =
-    [sim.Nx, sim.Ny + 1, sim.Nz + 1]
+    [sim.Nx, sim.Ny + 1, max(1, sim.Nz) + 1]
 get_component_voxel_count(sim::SimulationData, ::Union{Ey,Dy,εy}) =
-    [sim.Nx + 1, sim.Ny, sim.Nz + 1]
+    [sim.Nx + 1, sim.Ny, max(1, sim.Nz) + 1]
 get_component_voxel_count(sim::SimulationData, ::Union{Ez,Dz,εz}) =
-    [sim.Nx + 1, sim.Ny + 1, sim.Nz]
+    [sim.Nx + 1, sim.Ny + 1, max(1, sim.Nz)]
 get_component_voxel_count(sim::SimulationData, ::Union{Hx,Bx,μx}) =
-    [sim.Nx + 1, sim.Ny, sim.Nz]
+    [sim.Nx + 1, sim.Ny, max(1, sim.Nz)]
 get_component_voxel_count(sim::SimulationData, ::Union{Hy,By,μy}) =
-    [sim.Nx, sim.Ny + 1, sim.Nz]
+    [sim.Nx, sim.Ny + 1, max(1, sim.Nz)]
 get_component_voxel_count(sim::SimulationData, ::Union{Hz,Bz,μz}) =
-    [sim.Nx, sim.Ny, sim.Nz + 1]
-get_component_voxel_count(sim::SimulationData, ::Center) = [sim.Nx, sim.Ny, sim.Nz]
+    [sim.Nx, sim.Ny, max(1, sim.Nz) + 1]
+get_component_voxel_count(sim::SimulationData, ::Center) = [sim.Nx, sim.Ny, max(1, sim.Nz)]
 
 """create_array_from_volume
 
