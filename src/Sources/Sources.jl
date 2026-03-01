@@ -71,7 +71,8 @@ function assemble_sources(sim::SimulationData, source::Source)
         cc3 = Float64(sim.cell_center[3])
 
         # Build amplitude data on CPU, then bulk-transfer to GPU.
-        dims = ([gv.Nx, gv.Ny, gv.Nz][1:ndims])
+        # Always use 3D arrays even for 2D sims — the kernel uses 3D indexing.
+        dims = (gv.Nx, gv.Ny, max(1, gv.Nz))
         amplitude_data_cpu = zeros(Complex{Float64}, dims...)
         _fill_amplitude_data!(amplitude_data_cpu, source, component, pol_factor,
             amplitude, origin, gv_origin, cc3, Δx, Δy, Δz,
@@ -109,8 +110,8 @@ function _fill_amplitude_data!(
     gv_start_2 = gv_origin[2]
     gv_start_3 = gv_origin[3]
     n1 = size(amplitude_data_cpu, 1)
-    n2 = ndims >= 2 ? size(amplitude_data_cpu, 2) : 1
-    n3 = ndims >= 3 ? size(amplitude_data_cpu, 3) : 1
+    n2 = size(amplitude_data_cpu, 2)
+    n3 = size(amplitude_data_cpu, 3)
     Threads.@threads for ix in 1:n1
         for iy in 1:n2
             for iz in 1:n3
@@ -123,11 +124,7 @@ function _fill_amplitude_data!(
                     point, min_corner, max_corner, vol_size, ndims, Δ,
                 )
                 profile = _get_source_profile_fast(source, point, component, pol_factor)
-                if ndims == 3
-                    @inbounds amplitude_data_cpu[ix, iy, iz] = weight * amplitude * profile
-                else
-                    @inbounds amplitude_data_cpu[ix, iy] = weight * amplitude * profile
-                end
+                @inbounds amplitude_data_cpu[ix, iy, iz] = weight * amplitude * profile
             end
         end
     end
@@ -228,12 +225,8 @@ function _fill_amplitude_data!(
         for iy in 1:n2
             @inbounds cxy = cxi * cy[iy]
             cxy == 0.0 && continue
-            if ndims == 3
-                for iz in 1:n3
-                    @inbounds amplitude_data_cpu[ix, iy, iz] = cxy * cz[iz] * scale
-                end
-            else
-                @inbounds amplitude_data_cpu[ix, iy] = cxy * scale
+            for iz in 1:n3
+                @inbounds amplitude_data_cpu[ix, iy, iz] = cxy * (n3 > 1 ? cz[iz] : 1.0) * scale
             end
         end
     end

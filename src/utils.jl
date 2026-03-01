@@ -103,6 +103,11 @@ continuous Volume.
 function GridVolume(sim::SimulationData, volume::Volume, component::Field)
     start_idx = get_lower_grid_idx(sim, get_min_corner(volume), component)
     end_idx = get_upper_grid_idx(sim, get_max_corner(volume), component)
+    # Clamp z-indices to at least 1 for 2D simulations (Nz=0 → Δz=Inf → z-index=0)
+    if sim.ndims == 2
+        start_idx[3] = max(1, start_idx[3])
+        end_idx[3] = max(1, end_idx[3])
+    end
     Nx, Ny, Nz = end_idx .- start_idx .+ [1, 1, 1] # index-1 math
     GridVolume(component, start_idx, end_idx, Nx, Ny, Nz)
 end

@@ -205,6 +205,10 @@ function step_H_fused!(sim::SimulationData)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), Int(cuda_wg_x) * Int(cuda_wg_y))
             dummy3d = f.fBx
+            # For 2D: PML σ arrays may be Nothing for the z-axis.
+            # The raw CUDA kernels don't dispatch on Nothing, so pass a
+            # small zero-filled dummy array instead.
+            _σ(σ) = isnothing(σ) ? CUDA.zeros(backend_number, 1) : σ
 
             if use_ms
                 _s = sim._chunk_streams[ci]
@@ -212,21 +216,21 @@ function step_H_fused!(sim::SimulationData)
                     f.fEy, f.fEz, f.fBx, f.fHx,
                     isnothing(f.fUBx) ? dummy3d : f.fUBx,
                     isnothing(f.fWBx) ? dummy3d : f.fWBx,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dy), backend_number(dt_dz), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) stream=_s _cuda_pml_BH_y_kernel!(
                     f.fEz, f.fEx, f.fBy, f.fHy,
                     isnothing(f.fUBy) ? dummy3d : f.fUBy,
                     isnothing(f.fWBy) ? dummy3d : f.fWBy,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dz), backend_number(dt_dx), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) stream=_s _cuda_pml_BH_z_kernel!(
                     f.fEx, f.fEy, f.fBz, f.fHz,
                     isnothing(f.fUBz) ? dummy3d : f.fUBz,
                     isnothing(f.fWBz) ? dummy3d : f.fWBz,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dx), backend_number(dt_dy), iNx, iNy)
             else
@@ -234,21 +238,21 @@ function step_H_fused!(sim::SimulationData)
                     f.fEy, f.fEz, f.fBx, f.fHx,
                     isnothing(f.fUBx) ? dummy3d : f.fUBx,
                     isnothing(f.fWBx) ? dummy3d : f.fWBx,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dy), backend_number(dt_dz), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) _cuda_pml_BH_y_kernel!(
                     f.fEz, f.fEx, f.fBy, f.fHy,
                     isnothing(f.fUBy) ? dummy3d : f.fUBy,
                     isnothing(f.fWBy) ? dummy3d : f.fWBy,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dz), backend_number(dt_dx), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) _cuda_pml_BH_z_kernel!(
                     f.fEx, f.fEy, f.fBz, f.fHz,
                     isnothing(f.fUBz) ? dummy3d : f.fUBz,
                     isnothing(f.fWBz) ? dummy3d : f.fWBz,
-                    b.σBx, b.σBy, b.σBz,
+                    _σ(b.σBx), _σ(b.σBy), _σ(b.σBz),
                     backend_number(g.μ_inv),
                     backend_number(dt_dx), backend_number(dt_dy), iNx, iNy)
             end
@@ -368,6 +372,7 @@ function step_E_fused!(sim::SimulationData)
             iNx = Int32(nr[1]); iNy = Int32(nr[2]); iNz = Int32(nr[3])
             nblocks_x = cld(Int(iNx), Int(cuda_wg_x) * Int(cuda_wg_y))
             dummy3d = f.fDx
+            _σ(σ) = isnothing(σ) ? CUDA.zeros(backend_number, 1) : σ
 
             # Resolve per-voxel or scalar ε⁻¹ for each component
             eps_x = g.ε_inv_x isa AbstractArray ? g.ε_inv_x : backend_number(g.ε_inv)
@@ -380,21 +385,21 @@ function step_E_fused!(sim::SimulationData)
                     f.fHy, f.fHz, f.fDx, f.fEx,
                     isnothing(f.fUDx) ? dummy3d : f.fUDx,
                     isnothing(f.fWDx) ? dummy3d : f.fWDx,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_x,
                     backend_number(dt_dy), backend_number(dt_dz), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) stream=_s _cuda_pml_DE_y_kernel!(
                     f.fHz, f.fHx, f.fDy, f.fEy,
                     isnothing(f.fUDy) ? dummy3d : f.fUDy,
                     isnothing(f.fWDy) ? dummy3d : f.fWDy,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_y,
                     backend_number(dt_dz), backend_number(dt_dx), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) stream=_s _cuda_pml_DE_z_kernel!(
                     f.fHx, f.fHy, f.fDz, f.fEz,
                     isnothing(f.fUDz) ? dummy3d : f.fUDz,
                     isnothing(f.fWDz) ? dummy3d : f.fWDz,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_z,
                     backend_number(dt_dx), backend_number(dt_dy), iNx, iNy)
             else
@@ -402,21 +407,21 @@ function step_E_fused!(sim::SimulationData)
                     f.fHy, f.fHz, f.fDx, f.fEx,
                     isnothing(f.fUDx) ? dummy3d : f.fUDx,
                     isnothing(f.fWDx) ? dummy3d : f.fWDx,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_x,
                     backend_number(dt_dy), backend_number(dt_dz), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) _cuda_pml_DE_y_kernel!(
                     f.fHz, f.fHx, f.fDy, f.fEy,
                     isnothing(f.fUDy) ? dummy3d : f.fUDy,
                     isnothing(f.fWDy) ? dummy3d : f.fWDy,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_y,
                     backend_number(dt_dz), backend_number(dt_dx), iNx, iNy)
                 @cuda blocks=(nblocks_x, Int(iNy), Int(iNz)) threads=(Int(cuda_wg_x) * Int(cuda_wg_y), 1, 1) _cuda_pml_DE_z_kernel!(
                     f.fHx, f.fHy, f.fDz, f.fEz,
                     isnothing(f.fUDz) ? dummy3d : f.fUDz,
                     isnothing(f.fWDz) ? dummy3d : f.fWDz,
-                    b.σDx, b.σDy, b.σDz,
+                    _σ(b.σDx), _σ(b.σDy), _σ(b.σDz),
                     eps_z,
                     backend_number(dt_dx), backend_number(dt_dy), iNx, iNy)
             end
