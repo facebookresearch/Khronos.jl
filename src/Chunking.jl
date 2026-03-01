@@ -907,14 +907,20 @@ If `:pml_slabs`, uses PML-aware splitting (1 interior + up to 6 PML slab chunks)
 function plan_chunks(sim::SimulationData)::ChunkPlan
     nc = sim.num_chunks
 
-    # PML-aware slab splitting: separate PML-free interior from thin PML slabs.
-    # Interior chunk uses the fast fused kernel; PML slabs use the PML kernel.
+    # PML-aware Cartesian grid splitting (meep-style): separate the domain into
+    # up to 27 regions (3^ndims) with homogeneous PML characteristics per chunk.
+    # The interior chunk uses the fast fused kernel; PML chunks use PML kernels
+    # with only the needed auxiliary fields per axis.
     if (nc === nothing || nc === :auto) && !isnothing(sim.boundaries) && !is_distributed()
-        plan = _plan_chunks_pml_slabs(sim)
-        if !isnothing(plan)
-            return plan
+        plan = _plan_chunks_pml_grid(sim)
+        # Only use if we actually get an interior chunk (> 1 chunk means PML exists)
+        if plan.total_chunks > 1
+            n_interior = count(s -> !has_any_pml(s.physics), plan.chunks)
+            if n_interior > 0
+                return plan
+            end
         end
-        # Fallback to single chunk if slabs aren't beneficial
+        # Fallback to single chunk if no interior chunk exists
         vol = Volume(center = sim.cell_center, size = sim.cell_size)
         gv = GridVolume(sim, Center())
         physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries)
