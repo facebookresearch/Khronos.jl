@@ -159,8 +159,13 @@ end
 """
     _create_eigenmode_adjoint_source(oq, sim, time_src, amplitude, frequencies)
 
-Create a single eigenmode source for the adjoint run, propagating in the
-opposite direction to the forward mode.
+Create an eigenmode adjoint source using the mode profiles from the forward
+run's ModeMonitor.  The adjoint source propagates in the opposite direction
+by negating the H-field components of the mode profile.
+
+For single-frequency: `amplitude` is a scalar dJ * scale.
+For multi-frequency:  `amplitude` is a vector of per-frequency weights
+                      from FilteredSource nodes.
 """
 function _create_eigenmode_adjoint_source(
     oq::EigenmodeCoefficient,
@@ -169,30 +174,49 @@ function _create_eigenmode_adjoint_source(
     amplitude,
     frequencies::Vector{Float64},
 )
-    # Determine the normal direction of the monitor
     vol = oq.volume
-    normal_dir = argmin(vol.size)
+    normal_axis = findfirst(x -> x == 0.0, vol.size)
+    isnothing(normal_axis) && error("EigenmodeCoefficient volume must have one zero-size dimension")
 
-    # The adjoint source propagates in the opposite direction
-    # For forward mode: adjoint source is backward-propagating (negate k-point)
-    # For backward mode: adjoint source is forward-propagating
+    md = oq.monitor.monitor_data
 
-    # Create an EquivalentSource or ModeSource with negated propagation
-    # For now, we create a source at the monitor location
-    # The actual eigenmode profile will be solved by the mode solver
+    # Use the first frequency's mode profile for the spatial shape.
+    # (For broadband, FilteredSource handles the per-frequency weighting.)
+    mode = md.mode_profiles[1]
 
-    # Use the existing ModeSource infrastructure but with negated direction
-    # TODO: use the mode solver to get actual mode profiles for the adjoint source.
-    # For now, create a placeholder EquivalentSource with uniform profile.
-    empty_profile = Dict{Field,Function}(Ex() => (p, c) -> amplitude)
-    empty_fields = Dict{Field,AbstractArray}()
-    return EquivalentSourceData(
+    # Expand 2D mode fields to 3D with singleton along normal axis
+    function _expand(f)
+        if ndims(f) == 2
+            shape = collect(Base.size(f))
+            insert!(shape, normal_axis, 1)
+            return reshape(f, shape...)
+        end
+        return f
+    end
+
+    # Build the fields dict.  Negate H-fields to reverse propagation direction.
+    # For backward mode (oq.forward == false), the forward mode profile is
+    # already backward-propagating, so the adjoint should be forward → no negate.
+    h_sign = oq.forward ? -1.0 : 1.0
+
+    fields = Dict{Field, AbstractArray}(
+        Ex() => _expand(ComplexF64.(mode.Ex)),
+        Ey() => _expand(ComplexF64.(mode.Ey)),
+        Ez() => _expand(ComplexF64.(mode.Ez)),
+        Hx() => _expand(ComplexF64.(h_sign .* mode.Hx)),
+        Hy() => _expand(ComplexF64.(h_sign .* mode.Hy)),
+        Hz() => _expand(ComplexF64.(h_sign .* mode.Hz)),
+    )
+
+    # Scalar amplitude for the source (time_src handles temporal variation)
+    amp = amplitude isa AbstractVector ? amplitude[1] : amplitude
+
+    return EquivalentSource(
         time_profile = time_src,
+        fields = fields,
         center = collect(Float64.(vol.center)),
         size = collect(Float64.(vol.size)),
-        amplitude = 1.0,
-        source_profile = empty_profile,
-        fields = empty_fields,
+        amplitude = amp,
     )
 end
 
