@@ -109,13 +109,17 @@ function get_flux(md::FluxMonitorData)
     h1_fields = _avg_dim(h1_fields, normal_axis)
     h2_fields = _avg_dim(h2_fields, normal_axis)
 
-    # Grid spacing for the area element
+    # Grid spacing for the area element.
+    # In 2D (dz=Inf), use dz=1.0 for per-unit-length normalization.
+    _dx = isinf(md.dx) ? 1.0 : md.dx
+    _dy = isinf(md.dy) ? 1.0 : md.dy
+    _dz = isinf(md.dz) ? 1.0 : md.dz
     dA = if normal_axis == 1
-        md.dy * md.dz
+        _dy * _dz
     elseif normal_axis == 2
-        md.dx * md.dz
+        _dx * _dz
     else
-        md.dx * md.dy
+        _dx * _dy
     end
 
     # Determine grid dimensions in the tangential plane

@@ -371,18 +371,23 @@ function compute_mode_amplitudes(md::ModeMonitorData; verbose::Bool = false)
     h1_gv = h_mons[1].monitor_data.gv
     h2_gv = h_mons[2].monitor_data.gv
 
+    # In 2D (dz=Inf), use dz=1.0 for per-unit-length normalization.
+    _dx = isinf(md.dx) ? 1.0 : md.dx
+    _dy = isinf(md.dy) ? 1.0 : md.dy
+    _dz = isinf(md.dz) ? 1.0 : md.dz
+
     if normal_axis == 3       # z-normal: tangential = x, y
         n1 = min(e1_gv.Nx, e2_gv.Nx, h1_gv.Nx, h2_gv.Nx)
         n2 = min(e1_gv.Ny, e2_gv.Ny, h1_gv.Ny, h2_gv.Ny)
-        dA = md.dx * md.dy
+        dA = _dx * _dy
     elseif normal_axis == 1   # x-normal: tangential = y, z
         n1 = min(e1_gv.Ny, e2_gv.Ny, h1_gv.Ny, h2_gv.Ny)
         n2 = min(e1_gv.Nz, e2_gv.Nz, h1_gv.Nz, h2_gv.Nz)
-        dA = md.dy * md.dz
+        dA = _dy * _dz
     else                      # y-normal: tangential = x, z
         n1 = min(e1_gv.Nx, e2_gv.Nx, h1_gv.Nx, h2_gv.Nx)
         n2 = min(e1_gv.Nz, e2_gv.Nz, h1_gv.Nz, h2_gv.Nz)
-        dA = md.dx * md.dz
+        dA = _dx * _dz
     end
 
     # Physical base positions for coordinate mapping
