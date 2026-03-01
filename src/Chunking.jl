@@ -766,6 +766,115 @@ end
 # -------------------------------------------------------- #
 
 """
+    _plan_chunks_pml_slabs(sim) -> Union{ChunkPlan, Nothing}
+
+PML-aware chunk splitting: split along the longest axis into 3 chunks:
+  1. Left PML slab (thin, has PML)
+  2. Interior (large, no PML on split axis — uses fast fused kernel)
+  3. Right PML slab (thin, has PML)
+
+All 3 chunks span the full domain in the transverse axes, so their
+shared faces have matching sizes and halo exchange works correctly.
+
+Returns `nothing` if slabs aren't beneficial (PML too thick or domain too small).
+"""
+function _plan_chunks_pml_slabs(sim::SimulationData)
+    ndims = sim.ndims
+    Δ = [_scalar_spacing(sim.Δx), _scalar_spacing(sim.Δy), _scalar_spacing(sim.Δz)]
+    N_grid = [sim.Nx, sim.Ny, max(sim.Nz, 1)]
+
+    # Find the axis with the most interior cells (best splitting efficiency)
+    best_axis = 0
+    best_interior = 0
+    best_pml_end = 0
+    best_pml_start = 0
+
+    for axis in 1:ndims
+        if isnothing(sim.boundaries) || length(sim.boundaries) < axis
+            continue
+        end
+        pml_left = sim.boundaries[axis][1]
+        pml_right = sim.boundaries[axis][2]
+        (pml_left <= 0.0 && pml_right <= 0.0) && continue
+
+        pe = (pml_left > 0.0) ? ceil(Int, pml_left / Δ[axis]) : 0
+        ps = (pml_right > 0.0) ? N_grid[axis] - ceil(Int, pml_right / Δ[axis]) + 1 : N_grid[axis] + 1
+        interior = ps - pe - 1
+
+        if interior > best_interior
+            best_interior = interior
+            best_axis = axis
+            best_pml_end = pe
+            best_pml_start = ps
+        end
+    end
+
+    best_axis == 0 && return nothing
+
+    # Interior must be > 50% of axis length to be worth splitting
+    if best_interior < N_grid[best_axis] * 0.5
+        return nothing
+    end
+
+    specs = ChunkSpec[]
+    id = 1
+
+    function _add_chunk!(s_idx, e_idx)
+        any(e_idx .< s_idx) && return
+        vol = _grid_range_to_volume(sim, s_idx, e_idx)
+        Nx = e_idx[1] - s_idx[1] + 1
+        Ny = e_idx[2] - s_idx[2] + 1
+        Nz = e_idx[3] - s_idx[3] + 1
+        gv = GridVolume(Center(), s_idx, e_idx, Nx, Ny, Nz)
+        physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries; chunk_gv=gv)
+        push!(specs, ChunkSpec(id, vol, gv, physics, Int[], 0))
+        id += 1
+    end
+
+    ax = best_axis
+    s_full = [1, 1, 1]
+    e_full = copy(N_grid)
+
+    # 1. Left PML slab
+    if best_pml_end >= 1
+        s = copy(s_full); e = copy(e_full)
+        e[ax] = best_pml_end
+        _add_chunk!(s, e)
+    end
+
+    # 2. Interior chunk
+    s = copy(s_full); e = copy(e_full)
+    s[ax] = best_pml_end + 1
+    e[ax] = best_pml_start - 1
+    _add_chunk!(s, e)
+
+    # 3. Right PML slab
+    if best_pml_start <= N_grid[ax]
+        s = copy(s_full); e = copy(e_full)
+        s[ax] = best_pml_start
+        _add_chunk!(s, e)
+    end
+
+    length(specs) <= 1 && return nothing
+
+    adjacency = _compute_adjacency(specs, sim)
+
+    # Report
+    n_interior = count(s -> !has_any_pml(s.physics), specs)
+    int_voxels = sum(s.grid_volume.Nx * s.grid_volume.Ny * s.grid_volume.Nz
+                     for s in specs if !has_any_pml(s.physics); init=0)
+    total_voxels = prod(N_grid)
+    int_frac = round(int_voxels / total_voxels * 100, digits=1)
+    if !is_distributed() || is_root()
+        @info("PML slab splitting along axis $ax: $(length(specs)) chunks " *
+              "($(n_interior) interior = $(int_frac)% of domain)")
+    end
+
+    return ChunkPlan(specs, adjacency, length(specs))
+end
+
+
+"""
     plan_chunks(sim::SimulationData)::ChunkPlan
 
 Generate a chunk plan for the simulation.
@@ -774,15 +883,18 @@ If `sim.num_chunks` is `nothing`, returns a single-chunk plan (default).
 If `:auto` with PML boundaries, uses PML grid splitting for isotropic regions.
 If `:auto` without PML, returns a single chunk.
 If an `Int`, uses that number of chunks via BSP splitting.
+If `:pml_slabs`, uses PML-aware splitting (1 interior + up to 6 PML slab chunks).
 """
 function plan_chunks(sim::SimulationData)::ChunkPlan
     nc = sim.num_chunks
 
-    # Single-chunk PML: per-component kernels use σ-skipping for interior voxels
-    # (σ==0 → fast path H += μ⁻¹·K, identical to fused interior kernel).
-    # This eliminates the 27-chunk PML grid decomposition (~79 kernel launches
-    # per half-step) in favor of 3 per-component launches with warp-level branching.
-    if nc === :auto && !isnothing(sim.boundaries) && !is_distributed()
+    # Single-chunk PML: the fused PML kernel uses per-voxel σ-skipping,
+    # taking the fast path (H += μ⁻¹·K) for interior voxels where σ==0.
+    # PML-aware multi-chunk splitting would require either:
+    #   (a) 7 non-overlapping chunks with partial-face halo exchange, or
+    #   (b) 3 chunks along one axis, but y/z PML still affects all chunks.
+    # Neither provides a benefit over σ-skipping + CUDA Graph replay.
+    if (nc === nothing || nc === :auto) && !isnothing(sim.boundaries) && !is_distributed()
         vol = Volume(center = sim.cell_center, size = sim.cell_size)
         gv = GridVolume(sim, Center())
         physics = classify_region_physics(sim, vol, sim.geometry, sim.boundaries)
