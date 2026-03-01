@@ -911,7 +911,9 @@ function plan_chunks(sim::SimulationData)::ChunkPlan
     # up to 27 regions (3^ndims) with homogeneous PML characteristics per chunk.
     # The interior chunk uses the fast fused kernel; PML chunks use PML kernels
     # with only the needed auxiliary fields per axis.
-    if (nc === nothing || nc === :auto) && !isnothing(sim.boundaries) && !is_distributed()
+    # Only for 3D — 2D multi-chunk PML needs additional work for correct
+    # geometry/boundary initialization with Nz=0 arrays.
+    if (nc === nothing || nc === :auto) && !isnothing(sim.boundaries) && !is_distributed() && sim.ndims == 3
         plan = _plan_chunks_pml_grid(sim)
         # Only use if we actually get an interior chunk (> 1 chunk means PML exists)
         if plan.total_chunks > 1

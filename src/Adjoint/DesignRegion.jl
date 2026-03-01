@@ -260,14 +260,14 @@ function _write_design_to_sim!(
 
             # Copy the slice to CPU, modify, upload
             if sim.ndims == 2
-                slice_cpu = backend_number.(ε_inv_new[dr_start[1]:dr_end[1], dr_start[2]:dr_end[2]])
+                slice_gpu = backend_array(backend_number.(ε_inv_new[dr_start[1]:dr_end[1], dr_start[2]:dr_end[2]]))
                 # Direct array write for CPU backend, copyto! for GPU
-                ε_inv_arr[chunk_start[1]:chunk_end[1], chunk_start[2]:chunk_end[2]] .= slice_cpu
+                ε_inv_arr[chunk_start[1]:chunk_end[1], chunk_start[2]:chunk_end[2]] .= slice_gpu
             else
                 # 3D case: design region is 2D, extruded in z
-                slice_cpu = backend_number.(ε_inv_new[dr_start[1]:dr_end[1], dr_start[2]:dr_end[2]])
+                slice_gpu = backend_array(backend_number.(ε_inv_new[dr_start[1]:dr_end[1], dr_start[2]:dr_end[2]]))
                 for iz_chunk in chunk_start[3]:chunk_end[3]
-                    ε_inv_arr[chunk_start[1]:chunk_end[1], chunk_start[2]:chunk_end[2], iz_chunk] .= slice_cpu
+                    ε_inv_arr[chunk_start[1]:chunk_end[1], chunk_start[2]:chunk_end[2], iz_chunk] .= slice_gpu
                 end
             end
         end
