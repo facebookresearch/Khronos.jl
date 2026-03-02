@@ -134,6 +134,14 @@ function diagnostic_1pixel()
     # Save forward DFT for verification
     fwd_ez_before = copy(Array(opt.forward_design_monitors[3].monitor_data.fields))
 
+    # Debug: print the objective monitor's GridVolume
+    obj_gv = output_obj.monitor.monitor_data.gv
+    println("\nObjective monitor GridVolume:")
+    println("  start_idx: $(obj_gv.start_idx)")
+    println("  end_idx: $(obj_gv.end_idx)")
+    println("  Nx=$(obj_gv.Nx), Ny=$(obj_gv.Ny), Nz=$(obj_gv.Nz)")
+    println("  component: $(obj_gv.component)")
+
     Khronos.adjoint_run!(opt)
 
     # Verify forward DFT is preserved
