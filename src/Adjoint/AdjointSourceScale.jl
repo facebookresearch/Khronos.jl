@@ -85,11 +85,7 @@ function adj_src_scale(
     # Corrected iomega: discrete time derivative factor
     iomega = (1.0 .- exp.(-im .* (2π .* frequencies) .* dt)) ./ dt
 
-    # DTFT of the forward source (complex-valued, matching meep's convention)
-    # This uses the full complex eval_time_source, NOT real(), because the
-    # adj_src_scale formula normalizes the frequency-domain amplitude of the
-    # source waveform. The real() in update_source! is compensated by the
-    # real-field correction factor (×2) applied at the end.
+    # DTFT of the forward source dipole waveform.
     n_steps = floor(Int, T_sim / dt)
     t_vals = collect(0:n_steps-1) .* dt
     y = [Complex{Float64}(eval_time_source(time_profile, t)) for t in t_vals]
@@ -111,10 +107,8 @@ function adj_src_scale(
     adj_src_phase = exp(im * angle(src_center_dtft)) * fwidth_scale
 
     if length(frequencies) == 1
-        # Single-frequency: divide by forward source DTFT and phase correction
         scale = dV .* iomega ./ fwd_dtft ./ adj_src_phase
     else
-        # Multi-frequency: FilteredSource handles the source normalization
         scale = dV .* iomega ./ adj_src_phase
     end
 
