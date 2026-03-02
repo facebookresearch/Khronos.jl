@@ -74,7 +74,7 @@ function diagnostic_1pixel()
     Khronos.prepare_simulation!(sim)
     Khronos.init_design_region!(sim, dr)
 
-    fixed_runtime = 30.0
+    fixed_runtime = 80.0
 
     opt = Khronos.OptimizationProblem(
         sim = sim,
@@ -179,9 +179,28 @@ function diagnostic_1pixel()
         maxadj = maximum(abs.(e_adj[ci]))
         println("  $name: fwd max=$(maxfwd), adj max=$(maxadj), size=$(size(e_fwd[ci]))")
     end
-    # Check interpolation weights
-    println("\n  Per-design-parameter contribution from Ez:")
+    # Debug: compare design region gv with DFT monitor gv
+    println("\n  Design region GridVolumes vs DFT monitor GridVolumes:")
+    for (ci, (name, dr_gv)) in enumerate(zip(["Ex","Ey","Ez"], [dr.gv_Ex, dr.gv_Ey, dr.gv_Ez]))
+        mon_gv = opt.forward_design_monitors[ci].monitor_data.gv
+        match = (dr_gv.start_idx == mon_gv.start_idx) && (dr_gv.end_idx == mon_gv.end_idx)
+        println("    $name: DR gv=$(dr_gv.start_idx)-$(dr_gv.end_idx), MON gv=$(mon_gv.start_idx)-$(mon_gv.end_idx), match=$match")
+    end
+
+    # Debug: check bilinear weight sums per design parameter
     weights_Ez = dr.interp_weights_Ez
+    println("\n  Bilinear weight sums per design parameter (Ez):")
+    weight_sums = zeros(n_params)
+    weight_counts = zeros(Int, n_params)
+    for (yee_idx, design_idx, w) in weights_Ez
+        weight_sums[design_idx] += w
+        weight_counts[design_idx] += 1
+    end
+    for k in 1:n_params
+        @printf("    Param %d: sum=%.4f, count=%d\n", k, weight_sums[k], weight_counts[k])
+    end
+
+    println("\n  Per-design-parameter contribution from Ez:")
     rho = dr.design_parameters
     n_Ex = dr.gv_Ex.Nx * dr.gv_Ex.Ny
     n_Ey = dr.gv_Ey.Nx * dr.gv_Ey.Ny
@@ -237,7 +256,8 @@ function diagnostic_1pixel()
         )
         push!(sim.monitor_data, Khronos.init_monitors(sim, mon))
         for chunk in sim.chunk_data; chunk.monitor_data = sim.monitor_data; end
-        Khronos.run(sim; until = fixed_runtime)
+        Khronos.run(sim; until_after_sources = Khronos.stop_when_dft_decayed(
+            tolerance = 1e-4, maximum_runtime = fixed_runtime))
         return real(sum(abs2.(Array(mon.monitor_data.fields))))
     end
 

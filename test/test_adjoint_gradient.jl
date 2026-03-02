@@ -118,7 +118,8 @@ function validate_adjoint_gradient(;
         push!(sim.monitor_data, Khronos.init_monitors(sim, mon))
         for chunk in sim.chunk_data; chunk.monitor_data = sim.monitor_data; end
 
-        Khronos.run(sim; until = fixed_runtime)
+        Khronos.run(sim; until_after_sources = Khronos.stop_when_dft_decayed(
+            tolerance = 1e-4, maximum_runtime = fixed_runtime))
 
         return real(sum(abs2.(Array(mon.monitor_data.fields))))
     end
