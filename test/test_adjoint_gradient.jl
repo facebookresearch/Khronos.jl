@@ -13,6 +13,7 @@ import Khronos
 using GeometryPrimitives
 using LinearAlgebra
 using Printf
+using Random
 
 function validate_adjoint_gradient(;
     resolution = 20,
@@ -34,13 +35,12 @@ function validate_adjoint_gradient(;
     fcen = 0.5
     fwidth = 0.15
     cell_y = 3.0   # wide enough so the slab fills it
-    dz = 1.0 / resolution
     cell_x = design_Lx + 2 * pad + 2 * pml
 
     # Background dielectric required so ε_inv is allocated as per-voxel arrays
     # (without geometry, Khronos uses a scalar ε_inv=1 which can't be modified)
     geometry = [
-        Khronos.Object(Cuboid([0.0, 0.0, 0.0], [cell_x + 1, cell_y + 1, dz + 1]),
+        Khronos.Object(Cuboid([0.0, 0.0, 0.0], [cell_x + 1, cell_y + 1, 0.0]),
             Khronos.Material(ε = ε_lo)),
     ]
 
@@ -76,7 +76,7 @@ function validate_adjoint_gradient(;
     objective = ez_fields -> real(sum(abs2.(ez_fields)))
 
     sim = Khronos.Simulation(
-        cell_size = [cell_x, cell_y, dz],
+        cell_size = [cell_x, cell_y, 0.0],
         cell_center = [0.0, 0.0, 0.0],
         resolution = resolution,
         geometry = geometry,
@@ -124,6 +124,7 @@ function validate_adjoint_gradient(;
     end
 
     # ── Base point ──────────────────────────────────────────────────────
+    Random.seed!(42)
     rho0 = 0.3 .+ 0.4 .* rand(n_params)
 
     println("="^70)
@@ -141,7 +142,31 @@ function validate_adjoint_gradient(;
     Khronos.update_design!(sim, dr, rho0)
     opt.current_state = :INIT
     f0_adj = Khronos.forward_run!(opt)
+
+    # Debug: print DFT field shapes and objective monitor shape
+    println("\n  Debug: Forward DFT field shapes:")
+    for (i, m) in enumerate(opt.forward_design_monitors)
+        println("    Component $i: $(size(Array(m.monitor_data.fields)))")
+    end
+    println("  Debug: Objective eval_data shape: $(size(opt.results_list[1]))")
+    println("  Debug: Objective eval_data max|val|: $(maximum(abs.(opt.results_list[1])))")
+
+    # Debug: check dJ
+    dJ = Khronos._compute_jacobian(opt.objective_functions[1], opt.results_list, 1)
+    println("  Debug: dJ length=$(length(dJ)), max|dJ|=$(maximum(abs.(dJ)))")
+    println("  Debug: dJ[1:min(5,end)] = $(dJ[1:min(5,length(dJ))])")
+    println()
+
     Khronos.adjoint_run!(opt)
+
+    # Debug: print adjoint DFT field shapes
+    println("\n  Debug: Adjoint DFT field shapes:")
+    for (i, m) in enumerate(opt.adjoint_design_monitors)
+        f = Array(m.monitor_data.fields)
+        println("    Component $i: $(size(f)), max|val|=$(maximum(abs.(f)))")
+    end
+    println()
+
     Khronos.calculate_gradient!(opt)
     adj_grad = vec(opt.gradient)
 

@@ -261,6 +261,7 @@ at specified spatial locations.
     monitor::Union{Nothing, DFTMonitor} = nothing
     eval_data::Union{Nothing, AbstractArray} = nothing
     frequencies::Union{Nothing, Vector{Float64}} = nothing
+    _adjoint_source_data::Union{Nothing, Vector{SourceData}} = nothing
 end
 
 function register_monitors!(
@@ -292,55 +293,45 @@ function place_adjoint_source(
     dJ::AbstractArray{<:Number},
     frequencies::Vector{Float64},
 )
-    time_profile = create_adjoint_time_profile(frequencies)
-    scale = adj_src_scale(
-        sim, frequencies, get_time_profile(sim.sources[1]);
-        include_resolution=false,
-    )
+    # Use the same time profile as the forward source so that the
+    # adj_src_scale normalization (which divides by fwd_dtft) is consistent.
+    fwd_time_profile = get_time_profile(sim.sources[1])
+    time_profile = fwd_time_profile
 
-    # The adjoint source must be spatially varying: at each DFT voxel (i),
-    # the source amplitude is dJ[i] * scale[f]. The dJ array has the same
-    # shape as the DFT monitor output (Nx, Ny, Nz, Nfreq).
-    #
-    # Reshape dJ to match the monitor's DFT field shape.
     dft_shape = size(oq.eval_data)
     dJ_reshaped = reshape(dJ, dft_shape)
 
     if length(frequencies) == 1
-        # Create one point source per DFT voxel, weighted by dJ * scale.
-        # This correctly injects the spatially-varying adjoint current density.
-        dft_fields = dJ_reshaped[:, :, :, 1] .* scale[1]
-        gv = oq.monitor.monitor_data.gv
-        origin = get_component_origin(sim, oq.component)
-        Δx = Float64(_scalar_spacing(sim.Δx))
-        Δy = Float64(_scalar_spacing(sim.Δy))
-        Δz = sim.ndims == 3 ? Float64(_scalar_spacing(sim.Δz)) : 1.0
+        dJ_reshaped_3d = dJ_reshaped[:, :, :, 1]
+        n_spatial = length(dJ_reshaped_3d)
 
-        sources = Source[]
-        for iz in 1:size(dft_fields, 3)
-            for iy in 1:size(dft_fields, 2)
-                for ix in 1:size(dft_fields, 1)
-                    amp = dft_fields[ix, iy, iz]
-                    abs(amp) < 1e-20 && continue
-                    px = origin[1] + (ix + gv.start_idx[1] - 2) * Δx
-                    py = origin[2] + (iy + gv.start_idx[2] - 2) * Δy
-                    pz = sim.ndims == 3 ? origin[3] + (iz + gv.start_idx[3] - 2) * Δz : 0.0
-                    src = UniformSource(
-                        time_profile = time_profile,
-                        component = oq.component,
-                        center = [px, py, pz],
-                        size = [0.0, 0.0, 0.0],
-                        amplitude = amp,
-                    )
-                    push!(sources, src)
-                end
-            end
-        end
-        return sources
+        # For per-voxel SourceData injection, include_resolution=false:
+        # each grid point source already represents one voxel, so the dV
+        # factor from the spatial integration is implicit in the sum.
+        # The E-component negation is needed because Khronos adds sources
+        # to D (fSD += ...) while meep subtracts (D -= dt*J).
+        scale = adj_src_scale(
+            sim, frequencies, fwd_time_profile;
+            include_resolution=true,
+        )
+
+        dft_amp = ComplexF64.(dJ_reshaped_3d .* scale[1])
+        gv = oq.monitor.monitor_data.gv
+
+        # Upload to GPU
+        amp_gpu = complex_backend_array(complex_backend_number.(dft_amp))
+
+        sd = SourceData{complex_backend_array}(
+            amplitude_data = amp_gpu,
+            time_src = time_profile,
+            gv = gv,
+            component = oq.component,
+        )
+
+        oq._adjoint_source_data = [sd]
+        return Source[]
     else
-        # Multi-frequency: use FilteredSource with per-frequency spatial profiles
-        # For now, use a uniform source with the mean dJ (approximate)
-        # TODO: implement spatially-varying multi-frequency adjoint source
+        # Multi-frequency: uniform source approximation (TODO: per-voxel)
         avg_amp = mean(dJ_reshaped) * mean(scale)
         src = UniformSource(
             time_profile = time_profile,

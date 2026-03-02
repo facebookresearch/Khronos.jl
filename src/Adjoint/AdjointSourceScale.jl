@@ -85,30 +85,38 @@ function adj_src_scale(
     # Corrected iomega: discrete time derivative factor
     iomega = (1.0 .- exp.(-im .* (2π .* frequencies) .* dt)) ./ dt
 
-    # DTFT of the forward source
-    # Evaluate the source at each timestep and compute the DTFT
+    # DTFT of the forward source AS ACTUALLY INJECTED
+    # Khronos's update_source! kernel does: fSD += real(scalar_amp * spatial_amp)
+    # So the actual injected waveform is real(eval_time_source(t)), not the
+    # complex-valued eval_time_source(t). The DTFT must use the real part.
+    # (meep uses the complex source directly in its update, so meep's formula
+    # uses the complex DTFT. This is the key convention difference.)
     n_steps = floor(Int, T_sim / dt)
     t_vals = collect(0:n_steps-1) .* dt
     y = [Complex{Float64}(eval_time_source(time_profile, t)) for t in t_vals]
+    y_real = real.(y)  # what actually gets injected
 
     fwd_dtft = zeros(ComplexF64, length(frequencies))
     for (fi, f) in enumerate(frequencies)
         fwd_dtft[fi] = sum(
-            dt / sqrt(2π) .* exp.(im .* 2π .* f .* t_vals) .* y
+            dt / sqrt(2π) .* exp.(im .* 2π .* f .* t_vals) .* y_real
         )
     end
 
     # Phase correction from center frequency
+    # Use the COMPLEX source DTFT for the phase correction, since
+    # adj_src_phase captures the phase offset of the source waveform's
+    # envelope, which is the same regardless of the real() operation.
     fcen = get_frequency(time_profile)
-    src_center_dtft = sum(
+    src_center_dtft_complex = sum(
         dt / sqrt(2π) .* exp.(im .* 2π .* fcen .* t_vals) .* y
     )
     cutoff = 5.0
     fwidth_scale = exp(-2im * π * cutoff / fwidth_frac)
-    adj_src_phase = exp(im * angle(src_center_dtft)) * fwidth_scale
+    adj_src_phase = exp(im * angle(src_center_dtft_complex)) * fwidth_scale
 
     if length(frequencies) == 1
-        # Single-frequency: divide by forward source DTFT
+        # Single-frequency: divide by forward source DTFT and phase correction
         scale = dV .* iomega ./ fwd_dtft ./ adj_src_phase
     else
         # Multi-frequency: FilteredSource handles the source normalization

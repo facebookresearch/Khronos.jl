@@ -191,7 +191,13 @@ function adjoint_run!(opt::OptimizationProblem)
         end
     end
 
-    if isempty(adjoint_sources)
+    # Check if we have any sources (either Source[] or direct SourceData)
+    has_direct_source_data = any(
+        oq isa FourierFieldsObjective && !isnothing(oq._adjoint_source_data)
+        for oq in opt.objective_arguments
+    )
+
+    if isempty(adjoint_sources) && !has_direct_source_data
         @warn "No adjoint sources placed -- gradient is zero."
         opt.gradient = zeros(length(opt.design_regions[1].design_parameters), length(opt.frequencies))
         opt.current_state = :ADJ
@@ -230,11 +236,40 @@ function adjoint_run!(opt::OptimizationProblem)
 
     # Replace sources: swap the forward sources with adjoint sources
     saved_sources = sim.sources
-    sim.sources = adjoint_sources
+
+    # If we have direct SourceData (from fourier_sourcedata), we still need
+    # a dummy source in sim.sources for last_source_time() to work.
+    if isempty(adjoint_sources) && has_direct_source_data
+        # Create a dummy UniformSource with zero amplitude at the origin
+        # using the adjoint time profile for last_source_time calculation
+        adj_time_profile = create_adjoint_time_profile(opt.frequencies)
+        dummy = UniformSource(
+            time_profile = adj_time_profile,
+            component = opt.objective_arguments[1].component,
+            center = [0.0, 0.0, 0.0],
+            size = [0.0, 0.0, 0.0],
+            amplitude = 0.0,  # zero — actual injection via direct SourceData
+        )
+        sim.sources = [dummy]
+    else
+        sim.sources = adjoint_sources
+    end
 
     # Re-assemble source data for the new adjoint sources
-    # This computes spatial amplitude profiles and uploads to GPU
-    add_sources(sim, sim.sources)
+    if !isempty(adjoint_sources)
+        add_sources(sim, sim.sources)
+    else
+        sim.source_data = Vector{SourceData{complex_backend_array}}()
+    end
+
+    # Inject any direct SourceData from FourierFieldsObjective
+    # (exact fourier_sourcedata injection bypassing coordinate conversion)
+    for oq in opt.objective_arguments
+        if oq isa FourierFieldsObjective && !isnothing(oq._adjoint_source_data)
+            append!(sim.source_data, oq._adjoint_source_data)
+            oq._adjoint_source_data = nothing  # consumed
+        end
+    end
 
     # Distribute source data to chunks
     for chunk in sim.chunk_data
@@ -329,9 +364,11 @@ function _compute_jacobian(func::Function, args::Vector, arg_idx::Int)
         jac_re = ForwardDiff.jacobian(f_real, vec(real.(x)))
         jac_im = ForwardDiff.jacobian(f_imag, vec(imag.(x)))
 
-        # Combine: dJ/dz = dJ/dx - i*dJ/dy (Wirtinger derivative)
-        # Negate because the adjoint method convention uses -dJ for the source
-        return -vec(jac_re .- im .* jac_im)
+        # dJ/dx - i*dJ/dy = 2*∂g/∂z (conjugate Wirtinger derivative).
+        # No additional negation — the E-component sign and adj_src_phase
+        # handle the sign convention for Khronos's source injection.
+        result = vec(jac_re .- im .* jac_im)
+        return result
     else
         return [1.0 + 0.0im]
     end

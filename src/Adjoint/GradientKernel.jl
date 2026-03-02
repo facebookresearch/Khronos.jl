@@ -138,7 +138,7 @@ function calculate_gradient!(opt)
                 for iz in 1:nz
                     if iz <= size(adj_f, 3) && fi <= size(adj_f, 4) &&
                        iz <= size(fwd_f, 3) && fi <= size(fwd_f, 4)
-                        overlap += adj_f[ix, iy, iz, fi] * fwd_f[ix, iy, iz, fi]
+                        overlap += conj(adj_f[ix, iy, iz, fi]) * fwd_f[ix, iy, iz, fi]
                     end
                 end
                 # Only sum over z-planes where the design actually writes.
