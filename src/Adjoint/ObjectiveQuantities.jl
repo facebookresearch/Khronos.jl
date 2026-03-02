@@ -298,47 +298,57 @@ function place_adjoint_source(
         include_resolution=false,
     )
 
-    # For FourierFields, the adjoint source is a uniform source at the monitor
-    # volume, weighted by dJ * scale. The amplitude at each spatial point
-    # comes from the derivative of the objective w.r.t. the DFT field at that point.
+    # The adjoint source must be spatially varying: at each DFT voxel (i),
+    # the source amplitude is dJ[i] * scale[f]. The dJ array has the same
+    # shape as the DFT monitor output (Nx, Ny, Nz, Nfreq).
     #
-    # For a scalar objective like f = sum(|E|^2), dJ is a vector (one per freq).
-    # The adjoint source amplitude at each frequency is dJ[f] * scale[f].
+    # Reshape dJ to match the monitor's DFT field shape.
+    dft_shape = size(oq.eval_data)
+    dJ_reshaped = reshape(dJ, dft_shape)
 
-    dJ_vec = vec(dJ)
-
-    # For single frequency: amplitude is dJ * scale, use Gaussian time profile
     if length(frequencies) == 1
-        amp = dJ_vec[1] * scale[1]
+        # Create one point source per DFT voxel, weighted by dJ * scale.
+        # This correctly injects the spatially-varying adjoint current density.
+        dft_fields = dJ_reshaped[:, :, :, 1] .* scale[1]
+        gv = oq.monitor.monitor_data.gv
+        origin = get_component_origin(sim, oq.component)
+        Δx = Float64(_scalar_spacing(sim.Δx))
+        Δy = Float64(_scalar_spacing(sim.Δy))
+        Δz = sim.ndims == 3 ? Float64(_scalar_spacing(sim.Δz)) : 1.0
+
+        sources = Source[]
+        for iz in 1:size(dft_fields, 3)
+            for iy in 1:size(dft_fields, 2)
+                for ix in 1:size(dft_fields, 1)
+                    amp = dft_fields[ix, iy, iz]
+                    abs(amp) < 1e-20 && continue
+                    px = origin[1] + (ix + gv.start_idx[1] - 2) * Δx
+                    py = origin[2] + (iy + gv.start_idx[2] - 2) * Δy
+                    pz = sim.ndims == 3 ? origin[3] + (iz + gv.start_idx[3] - 2) * Δz : 0.0
+                    src = UniformSource(
+                        time_profile = time_profile,
+                        component = oq.component,
+                        center = [px, py, pz],
+                        size = [0.0, 0.0, 0.0],
+                        amplitude = amp,
+                    )
+                    push!(sources, src)
+                end
+            end
+        end
+        return sources
+    else
+        # Multi-frequency: use FilteredSource with per-frequency spatial profiles
+        # For now, use a uniform source with the mean dJ (approximate)
+        # TODO: implement spatially-varying multi-frequency adjoint source
+        avg_amp = mean(dJ_reshaped) * mean(scale)
         src = UniformSource(
             time_profile = time_profile,
             component = oq.component,
             center = oq.volume.center,
             size = oq.volume.size,
-            amplitude = amp,
+            amplitude = avg_amp,
         )
         return Source[src]
-    else
-        # Multi-frequency: use FilteredSource
-        freq_scale = dJ_vec .* scale
-        filtered_src = FilteredSource(
-            get_frequency(time_profile),
-            frequencies,
-            freq_scale,
-            Float64(sim.Δt),
-        )
-        sources = Source[]
-        for (bi, bf) in enumerate(filtered_src.basis_sources)
-            amp = filtered_src.nodes[bi, 1]  # scalar amplitude for uniform source
-            src = UniformSource(
-                time_profile = bf,
-                component = oq.component,
-                center = oq.volume.center,
-                size = oq.volume.size,
-                amplitude = amp,
-            )
-            push!(sources, src)
-        end
-        return sources
     end
 end
