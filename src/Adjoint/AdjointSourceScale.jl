@@ -85,35 +85,30 @@ function adj_src_scale(
     # Corrected iomega: discrete time derivative factor
     iomega = (1.0 .- exp.(-im .* (2π .* frequencies) .* dt)) ./ dt
 
-    # DTFT of the forward source AS ACTUALLY INJECTED
-    # Khronos's update_source! kernel does: fSD += real(scalar_amp * spatial_amp)
-    # So the actual injected waveform is real(eval_time_source(t)), not the
-    # complex-valued eval_time_source(t). The DTFT must use the real part.
-    # (meep uses the complex source directly in its update, so meep's formula
-    # uses the complex DTFT. This is the key convention difference.)
+    # DTFT of the forward source (complex-valued, matching meep's convention)
+    # This uses the full complex eval_time_source, NOT real(), because the
+    # adj_src_scale formula normalizes the frequency-domain amplitude of the
+    # source waveform. The real() in update_source! is compensated by the
+    # real-field correction factor (×2) applied at the end.
     n_steps = floor(Int, T_sim / dt)
     t_vals = collect(0:n_steps-1) .* dt
     y = [Complex{Float64}(eval_time_source(time_profile, t)) for t in t_vals]
-    y_real = real.(y)  # what actually gets injected
 
     fwd_dtft = zeros(ComplexF64, length(frequencies))
     for (fi, f) in enumerate(frequencies)
         fwd_dtft[fi] = sum(
-            dt / sqrt(2π) .* exp.(im .* 2π .* f .* t_vals) .* y_real
+            dt / sqrt(2π) .* exp.(im .* 2π .* f .* t_vals) .* y
         )
     end
 
     # Phase correction from center frequency
-    # Use the COMPLEX source DTFT for the phase correction, since
-    # adj_src_phase captures the phase offset of the source waveform's
-    # envelope, which is the same regardless of the real() operation.
     fcen = get_frequency(time_profile)
-    src_center_dtft_complex = sum(
+    src_center_dtft = sum(
         dt / sqrt(2π) .* exp.(im .* 2π .* fcen .* t_vals) .* y
     )
     cutoff = 5.0
     fwidth_scale = exp(-2im * π * cutoff / fwidth_frac)
-    adj_src_phase = exp(im * angle(src_center_dtft_complex)) * fwidth_scale
+    adj_src_phase = exp(im * angle(src_center_dtft)) * fwidth_scale
 
     if length(frequencies) == 1
         # Single-frequency: divide by forward source DTFT and phase correction
@@ -123,10 +118,11 @@ function adj_src_scale(
         scale = dV .* iomega ./ adj_src_phase
     end
 
-    # Note: Khronos uses real-valued FDTD fields. The real-field factor of 2
-    # is NOT applied here because the DFT accumulator and the adjoint source
-    # both operate in the same convention — the factor cancels between the
-    # forward DFT normalization and the adjoint source injection.
+    # Real-field correction: Khronos uses real-valued FDTD fields (non-Bloch BC).
+    # The source injection does fSD += real(scalar_amp * spatial_amp), which
+    # halves the positive-frequency Fourier amplitude: Re[J] = (J + J*)/2.
+    # To compensate, we multiply by 2, matching meep's using_real_fields() path.
+    scale .*= 2
 
     return scale
 end
