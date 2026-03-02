@@ -115,10 +115,10 @@ function adj_src_scale(
         scale = dV .* iomega ./ adj_src_phase
     end
 
-    # Real-field correction: Re[J] = (J + J*)/2 halves the positive-freq amplitude
-    # Khronos uses complex fields by default, so no correction needed unless
-    # the simulation explicitly uses real fields.
-    # TODO: add real-field detection if Khronos supports it
+    # Note: Khronos uses real-valued FDTD fields. The real-field factor of 2
+    # is NOT applied here because the DFT accumulator and the adjoint source
+    # both operate in the same convention — the factor cancels between the
+    # forward DFT normalization and the adjoint source injection.
 
     return scale
 end

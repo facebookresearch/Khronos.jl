@@ -141,7 +141,9 @@ function calculate_gradient!(opt)
                         overlap += adj_f[ix, iy, iz, fi] * fwd_f[ix, iy, iz, fi]
                     end
                 end
-                gradient[design_idx, fi] += real(-d_eps_inv * w * overlap)
+                # Average over z (design is 2D, extruded uniformly in z)
+                overlap /= max(1, nz)
+                gradient[design_idx, fi] += real(d_eps_inv * w * overlap)
             end
         end
     end
