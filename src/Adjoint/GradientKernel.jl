@@ -141,8 +141,15 @@ function calculate_gradient!(opt)
                         overlap += adj_f[ix, iy, iz, fi] * fwd_f[ix, iy, iz, fi]
                     end
                 end
-                # Average over the DFT monitor's z-planes (1-2 due to Yee stagger)
-                overlap /= max(1, nz)
+                # Only sum over z-planes where the design actually writes.
+                # The DFT monitor may extend beyond the design region due to
+                # Yee stagger. The design writes to nz_write z-planes as
+                # determined by the geometry array extent for this component.
+                # For 2D designs (z-size=0), the DFT is at 1-2 z-planes and
+                # we average to get the per-z sensitivity.
+                if dr.volume.size[3] == 0.0
+                    overlap /= max(1, nz)
+                end
                 gradient[design_idx, fi] += real(d_eps_inv * w * overlap)
             end
         end

@@ -294,33 +294,45 @@ For a scalar-valued function of complex inputs, this extracts the
 derivative as a complex number.
 """
 function _compute_jacobian(func::Function, args::Vector, arg_idx::Int)
-    # The objective function takes all results_list entries as arguments
-    # We need dJ/d(args[arg_idx])
+    # Compute the Wirtinger derivative dJ/dz of the objective function w.r.t.
+    # the complex-valued monitor output args[arg_idx].
     x = args[arg_idx]
 
-    if x isa Vector{<:Number}
-        # Use ForwardDiff for the Jacobian
+    if x isa AbstractArray{<:Number}
+        orig_shape = size(x)
+
+        # ForwardDiff.jacobian flattens the input to a Vector, so we must
+        # reshape back to the original array shape inside the function.
+        # Cache the imaginary parts (Float64) for use in f_real,
+        # and real parts for use in f_imag.
+        x_imag_cache = imag.(x)
+        x_real_cache = real.(x)
+
         function f_real(x_re)
-            new_args = copy(args)
-            new_args[arg_idx] = complex.(x_re, imag.(args[arg_idx]))
+            new_args = Any[a for a in args]  # Untyped copy for Dual compatibility
+            x_re_shaped = reshape(x_re, orig_shape)
+            T = eltype(x_re)
+            new_args[arg_idx] = complex.(x_re_shaped, T.(x_imag_cache))
             result = func(new_args...)
-            return isa(result, Number) ? [real(result)] : real.(result)
+            return [result]
         end
 
         function f_imag(x_im)
-            new_args = copy(args)
-            new_args[arg_idx] = complex.(real.(args[arg_idx]), x_im)
+            new_args = Any[a for a in args]
+            x_im_shaped = reshape(x_im, orig_shape)
+            T = eltype(x_im)
+            new_args[arg_idx] = complex.(T.(x_real_cache), x_im_shaped)
             result = func(new_args...)
-            return isa(result, Number) ? [real(result)] : real.(result)
+            return [result]
         end
 
-        jac_re = ForwardDiff.jacobian(f_real, real.(x))
-        jac_im = ForwardDiff.jacobian(f_imag, imag.(x))
+        jac_re = ForwardDiff.jacobian(f_real, vec(real.(x)))
+        jac_im = ForwardDiff.jacobian(f_imag, vec(imag.(x)))
 
         # Combine: dJ/dz = dJ/dx - i*dJ/dy (Wirtinger derivative)
-        return vec(jac_re .- im .* jac_im)
+        # Negate because the adjoint method convention uses -dJ for the source
+        return -vec(jac_re .- im .* jac_im)
     else
-        # Scalar case
         return [1.0 + 0.0im]
     end
 end
