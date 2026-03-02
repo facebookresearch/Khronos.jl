@@ -85,40 +85,55 @@ function calculate_gradient!(opt)
 
     n_freqs = length(freqs)
     n_design = length(dr.design_parameters)
-    dε_factor = dr.ε_max - dr.ε_min
+
+    # The simulation stores ε_inv = 1/ε(ρ), where ε(ρ) = ε_min + ρ*(ε_max - ε_min).
+    # The adjoint gradient formula for ε_inv parameterization:
+    #   df/dρ_k = Σ_voxels w_ki · Re[ E_adj_i · E_fwd_i ] · d(ε_inv)/dρ_i
+    # where d(ε_inv)/dρ = -(ε_max - ε_min) / ε(ρ_interp)²
+    # and ρ_interp is the bilinearly interpolated design parameter at each Yee point.
+    dε_range = dr.ε_max - dr.ε_min
+
+    # Pre-compute interpolated ρ at each Yee grid for each component
+    rho = dr.design_parameters
+    n_Ex = dr.gv_Ex.Nx * dr.gv_Ex.Ny
+    n_Ey = dr.gv_Ey.Nx * dr.gv_Ey.Ny
+    n_Ez = dr.gv_Ez.Nx * dr.gv_Ez.Ny
+    rho_yee_Ex = Khronos._interpolate_design_to_yee(rho, dr.interp_weights_Ex, n_Ex)
+    rho_yee_Ey = Khronos._interpolate_design_to_yee(rho, dr.interp_weights_Ey, n_Ey)
+    rho_yee_Ez = Khronos._interpolate_design_to_yee(rho, dr.interp_weights_Ez, n_Ez)
 
     # Get the DFT fields from the forward and adjoint design region monitors
     fwd_monitors = opt.forward_design_monitors
     adj_monitors = opt.adjoint_design_monitors
 
     # Extract DFT field arrays and transfer to CPU
-    # DFT fields have shape (Nx, Ny, Nz, Nfreq)
     e_fwd = [Array(fwd_monitors[i].monitor_data.fields) for i in 1:3]
     e_adj = [Array(adj_monitors[i].monitor_data.fields) for i in 1:3]
 
-    # Compute per-voxel overlap on CPU for each component separately,
-    # then restrict to design grid using that component's interpolation weights
     gradient = zeros(Float64, n_design, n_freqs)
 
-    for (ci, (fwd_f, adj_f, weights)) in enumerate(zip(e_fwd, e_adj, [
-        dr.interp_weights_Ex, dr.interp_weights_Ey, dr.interp_weights_Ez,
-    ]))
-        # Get the 2D grid dimensions for this component
+    for (ci, (fwd_f, adj_f, weights, rho_yee)) in enumerate(zip(
+        e_fwd, e_adj,
+        [dr.interp_weights_Ex, dr.interp_weights_Ey, dr.interp_weights_Ez],
+        [rho_yee_Ex, rho_yee_Ey, rho_yee_Ez],
+    ))
         nx = size(fwd_f, 1)
         ny = size(fwd_f, 2)
         nz = size(fwd_f, 3)
 
-        # For each yee grid point, compute the overlap integral and restrict
         for (yee_idx, design_idx, w) in weights
-            # Convert linear yee_idx back to (ix, iy)
             iy = div(yee_idx - 1, nx) + 1
             ix = mod(yee_idx - 1, nx) + 1
 
             ix > nx && continue
             iy > ny && continue
 
+            # d(ε_inv)/dρ at this Yee voxel
+            ρ_local = clamp(rho_yee[yee_idx], 0.0, 1.0)
+            ε_local = dr.ε_min + ρ_local * dε_range
+            d_eps_inv = -dε_range / (ε_local^2)
+
             for fi in 1:n_freqs
-                # Sum over z dimension (for 2D sims, nz is 1 or 2)
                 overlap = zero(ComplexF64)
                 for iz in 1:nz
                     if iz <= size(adj_f, 3) && fi <= size(adj_f, 4) &&
@@ -126,14 +141,12 @@ function calculate_gradient!(opt)
                         overlap += adj_f[ix, iy, iz, fi] * fwd_f[ix, iy, iz, fi]
                     end
                 end
-                gradient[design_idx, fi] += real(-dε_factor * w * overlap)
+                gradient[design_idx, fi] += real(-d_eps_inv * w * overlap)
             end
         end
     end
 
-    # Store the gradient
     opt.gradient = gradient
-
     return opt.gradient
 end
 
