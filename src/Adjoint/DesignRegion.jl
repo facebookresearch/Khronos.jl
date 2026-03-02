@@ -298,7 +298,6 @@ function install_design_region_monitors!(
             frequencies = frequencies,
         )
         push!(dr.design_monitors, mon)
-        # Initialize the monitor and push its data into sim.monitor_data
         push!(sim.monitor_data, init_monitors(sim, mon))
     end
 

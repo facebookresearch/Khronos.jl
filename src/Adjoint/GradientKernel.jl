@@ -141,9 +141,7 @@ function calculate_gradient!(opt)
                         overlap += adj_f[ix, iy, iz, fi] * fwd_f[ix, iy, iz, fi]
                     end
                 end
-                # Average over z for 2D designs (all z-planes have same field).
-                # The design DFT monitor may sample 1-2 z-planes; the average
-                # gives the representative per-z sensitivity.
+                # Average over the DFT monitor's z-planes (1-2 due to Yee stagger)
                 overlap /= max(1, nz)
                 gradient[design_idx, fi] += real(d_eps_inv * w * overlap)
             end
