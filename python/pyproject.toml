@@ -1,8 +1,8 @@
 [project]
 name = "khronos"
-version = "0.1.0"
-description = "GPU-accelerated FDTD solver with tidy3d-compatible Python API"
-requires-python = ">=3.9"
+version = "0.2.0"
+description = "GPU-accelerated FDTD solver with meep-compatible Python API"
+requires-python = ">=3.10"
 dependencies = [
     "juliacall>=0.9.20",
     "numpy>=1.20",
@@ -11,9 +11,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+khronos-build-sysimage = "khronos._sysimage:build_sysimage_cli"
+
 [build-system]
 requires = ["setuptools>=64"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+"khronos.julia_src" = ["Project.toml", "src/**/*.jl", "precompile/**/*.jl"]

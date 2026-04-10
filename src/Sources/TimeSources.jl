@@ -98,7 +98,12 @@ function GaussianPulseSource(; fcen, fwidth, start_time = 0.0, cutoff_scale = 5.
         cutoff *= 0.9
     end
 
-    peak_time = (cutoff) / 2
+    # Snap peak_time to the nearest integer multiple of 1/fcen.
+    # This ensures exp(iω·peak_time) = 1, making the source DTFT purely real
+    # and eliminating phase-dependent sign flips in the adjoint gradient.
+    peak_time_raw = cutoff / 2
+    period = 1.0 / fcen
+    peak_time = round(peak_time_raw / period) * period
 
     return GaussianPulseData{backend_number}(fcen, fwidth, width, peak_time, cutoff)
 end
@@ -122,10 +127,8 @@ function eval_time_source(src::GaussianPulseData{numType}, t::Real) where {numTy
         return zero(Complex{T})
     end
     two_pi = T(2) * T(π)
-    amp = inv((-two_pi * src.fcen * im))
     return exp(-tt * tt / (T(2) * src.width * src.width)) *
-           exp(-two_pi * Complex{T}(im) * src.fcen * tt) *
-           amp
+           exp(-two_pi * Complex{T}(im) * src.fcen * tt)
 end
 
 get_cutoff(src::GaussianPulseData) = src.cutoff

@@ -6,7 +6,6 @@ using Einsum
 using GeometryPrimitives
 using Parameters
 using KernelAbstractions
-using Revise
 using Logging
 using LinearAlgebra
 using OffsetArrays

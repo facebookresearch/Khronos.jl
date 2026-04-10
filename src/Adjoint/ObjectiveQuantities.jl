@@ -312,7 +312,7 @@ function place_adjoint_source(
         # to D (fSD += ...) while meep subtracts (D -= dt*J).
         scale = adj_src_scale(
             sim, frequencies, fwd_time_profile;
-            include_resolution=true,
+            include_resolution=false,
         )
 
         dft_amp = ComplexF64.(dJ_reshaped_3d .* scale[1])

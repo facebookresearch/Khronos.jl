@@ -284,7 +284,8 @@ function update_monitor(sim::SimulationData, monitor::DFTMonitorData, time::Real
             monitor.gv.start_idx[1],
             monitor.gv.start_idx[2],
             monitor.gv.start_idx[3],
-            complex_backend_number(-im * 2 * π * time),
+            complex_backend_number(im * 2 * π * time),
+            backend_number(sim.Δt),
             ndrange = ndrange,
         )
     else
@@ -319,7 +320,8 @@ function update_monitor(sim::SimulationData, monitor::DFTMonitorData, time::Real
                 monitor.frequencies,
                 mon_base[1], mon_base[2], mon_base[3],
                 chunk_offset[1], chunk_offset[2], chunk_offset[3],
-                complex_backend_number(-im * 2 * π * time),
+                complex_backend_number(im * 2 * π * time),
+                backend_number(sim.Δt),
                 ndrange = tuple(overlap_size...),
             )
         end
@@ -337,10 +339,10 @@ end
     chunk_offset_y::Int,
     chunk_offset_z::Int,
     time_fac::Number,
+    dt_scale::Number,
 )
     ix, iy, iz = @index(Global, NTuple)
 
-    # Map kernel index to monitor index and chunk field index
     mx = ix + mon_base_x
     my = iy + mon_base_y
     mz = iz + mon_base_z
@@ -350,7 +352,7 @@ end
 
     for k in eachindex(frequencies)
         monitor_fields[mx, my, mz, k] += (
-            exp(frequencies[k] * time_fac) *
+            dt_scale * exp(frequencies[k] * time_fac) *
             chunk_fields[cx, cy, cz]
         )
     end
@@ -364,12 +366,13 @@ end
     offset_y::Int,
     offset_z::Int,
     time_fac::Number,
+    dt_scale::Number,
 )
     ix, iy, iz = @index(Global, NTuple)
 
     for k in eachindex(frequencies)
         monitor_fields[ix, iy, iz, k] += (
-            exp(frequencies[k] * time_fac) *
+            dt_scale * exp(frequencies[k] * time_fac) *
             sim_fields[ix+offset_x, iy+offset_y, iz+offset_z]
         )
     end

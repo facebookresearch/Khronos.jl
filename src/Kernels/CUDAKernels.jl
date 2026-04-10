@@ -153,9 +153,13 @@ function _cuda_pml_BH_kernel!(
         # U stage: X uses σ_next = σ_pml_y (pml_y)
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            u_old = UBx[ix,iy,iz]
-            UBx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
-            in_t = UBx[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UBx[ix,iy,iz]
+                UBx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+                in_t = UBx[ix,iy,iz] - u_old
+            else
+                in_t = Kx
+            end
         else
             in_t = Kx
         end
@@ -163,7 +167,11 @@ function _cuda_pml_BH_kernel!(
         # T stage: X uses σ_prev = σ_pml_z (pml_z)
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            Bx[ix,iy,iz] = ((_one - σ_val) * Bx[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Bx[ix,iy,iz] = ((_one - σ_val) * Bx[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Bx[ix,iy,iz] = Bx[ix,iy,iz] + in_t
+            end
         else
             Bx[ix,iy,iz] = Bx[ix,iy,iz] + in_t
         end
@@ -171,9 +179,13 @@ function _cuda_pml_BH_kernel!(
         # H update: X uses σ_own = σ_pml_x (pml_x)
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            w_old = WBx[ix,iy,iz]
-            WBx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
-            Hx[ix,iy,iz] = Hx[ix,iy,iz] + (_one + σ_val) * WBx[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WBx[ix,iy,iz]
+                WBx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+                Hx[ix,iy,iz] = Hx[ix,iy,iz] + (_one + σ_val) * WBx[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Hx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
+            end
         else
             Hx[ix,iy,iz] = m_inv * Bx[ix,iy,iz]
         end
@@ -185,9 +197,13 @@ function _cuda_pml_BH_kernel!(
         # U stage: Y uses σ_next = σ_pml_z (pml_z)
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            u_old = UBy[ix,iy,iz]
-            UBy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
-            in_t = UBy[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UBy[ix,iy,iz]
+                UBy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+                in_t = UBy[ix,iy,iz] - u_old
+            else
+                in_t = Ky
+            end
         else
             in_t = Ky
         end
@@ -195,7 +211,11 @@ function _cuda_pml_BH_kernel!(
         # T stage: Y uses σ_prev = σ_pml_x (pml_x)
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            By[ix,iy,iz] = ((_one - σ_val) * By[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                By[ix,iy,iz] = ((_one - σ_val) * By[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                By[ix,iy,iz] = By[ix,iy,iz] + in_t
+            end
         else
             By[ix,iy,iz] = By[ix,iy,iz] + in_t
         end
@@ -203,9 +223,13 @@ function _cuda_pml_BH_kernel!(
         # H update: Y uses σ_own = σ_pml_y (pml_y)
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            w_old = WBy[ix,iy,iz]
-            WBy[ix,iy,iz] = m_inv * By[ix,iy,iz]
-            Hy[ix,iy,iz] = Hy[ix,iy,iz] + (_one + σ_val) * WBy[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WBy[ix,iy,iz]
+                WBy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+                Hy[ix,iy,iz] = Hy[ix,iy,iz] + (_one + σ_val) * WBy[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Hy[ix,iy,iz] = m_inv * By[ix,iy,iz]
+            end
         else
             Hy[ix,iy,iz] = m_inv * By[ix,iy,iz]
         end
@@ -217,9 +241,13 @@ function _cuda_pml_BH_kernel!(
         # U stage: Z uses σ_next = σ_pml_x (pml_x)
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            u_old = UBz[ix,iy,iz]
-            UBz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
-            in_t = UBz[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UBz[ix,iy,iz]
+                UBz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+                in_t = UBz[ix,iy,iz] - u_old
+            else
+                in_t = Kz
+            end
         else
             in_t = Kz
         end
@@ -227,7 +255,11 @@ function _cuda_pml_BH_kernel!(
         # T stage: Z uses σ_prev = σ_pml_y (pml_y)
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            Bz[ix,iy,iz] = ((_one - σ_val) * Bz[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Bz[ix,iy,iz] = ((_one - σ_val) * Bz[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Bz[ix,iy,iz] = Bz[ix,iy,iz] + in_t
+            end
         else
             Bz[ix,iy,iz] = Bz[ix,iy,iz] + in_t
         end
@@ -235,9 +267,13 @@ function _cuda_pml_BH_kernel!(
         # H update: Z uses σ_own = σ_pml_z (pml_z)
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            w_old = WBz[ix,iy,iz]
-            WBz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
-            Hz[ix,iy,iz] = Hz[ix,iy,iz] + (_one + σ_val) * WBz[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WBz[ix,iy,iz]
+                WBz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+                Hz[ix,iy,iz] = Hz[ix,iy,iz] + (_one + σ_val) * WBz[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Hz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
+            end
         else
             Hz[ix,iy,iz] = m_inv * Bz[ix,iy,iz]
         end
@@ -272,25 +308,37 @@ function _cuda_pml_DE_kernel!(
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            u_old = UDx[ix,iy,iz]
-            UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
-            in_t = UDx[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDx[ix,iy,iz]
+                UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+                in_t = UDx[ix,iy,iz] - u_old
+            else
+                in_t = Kx
+            end
         else
             in_t = Kx
         end
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
+            end
         else
             Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
         end
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            w_old = WDx[ix,iy,iz]
-            WDx[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
-            Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDx[ix,iy,iz]
+                WDx[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
+                Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ex[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
+            end
         else
             Ex[ix,iy,iz] = eps_inv_x[ix_0,iy_0,iz_0] * Dx[ix,iy,iz]
         end
@@ -300,25 +348,37 @@ function _cuda_pml_DE_kernel!(
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            u_old = UDy[ix,iy,iz]
-            UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
-            in_t = UDy[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDy[ix,iy,iz]
+                UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+                in_t = UDy[ix,iy,iz] - u_old
+            else
+                in_t = Ky
+            end
         else
             in_t = Ky
         end
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
+            end
         else
             Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
         end
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            w_old = WDy[ix,iy,iz]
-            WDy[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
-            Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDy[ix,iy,iz]
+                WDy[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
+                Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ey[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
+            end
         else
             Ey[ix,iy,iz] = eps_inv_y[ix_0,iy_0,iz_0] * Dy[ix,iy,iz]
         end
@@ -328,25 +388,37 @@ function _cuda_pml_DE_kernel!(
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            u_old = UDz[ix,iy,iz]
-            UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
-            in_t = UDz[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDz[ix,iy,iz]
+                UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+                in_t = UDz[ix,iy,iz] - u_old
+            else
+                in_t = Kz
+            end
         else
             in_t = Kz
         end
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
+            end
         else
             Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
         end
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            w_old = WDz[ix,iy,iz]
-            WDz[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
-            Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDz[ix,iy,iz]
+                WDz[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
+                Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ez[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
+            end
         else
             Ez[ix,iy,iz] = eps_inv_z[ix_0,iy_0,iz_0] * Dz[ix,iy,iz]
         end
@@ -381,25 +453,37 @@ function _cuda_pml_DE_scalar_kernel!(
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            u_old = UDx[ix,iy,iz]
-            UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
-            in_t = UDx[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDx[ix,iy,iz]
+                UDx[ix,iy,iz] = ((_one - σ_val) * u_old + Kx) / (_one + σ_val)
+                in_t = UDx[ix,iy,iz] - u_old
+            else
+                in_t = Kx
+            end
         else
             in_t = Kx
         end
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dx[ix,iy,iz] = ((_one - σ_val) * Dx[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
+            end
         else
             Dx[ix,iy,iz] = Dx[ix,iy,iz] + in_t
         end
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            w_old = WDx[ix,iy,iz]
-            WDx[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
-            Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDx[ix,iy,iz]
+                WDx[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
+                Ex[ix,iy,iz] = Ex[ix,iy,iz] + (_one + σ_val) * WDx[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ex[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
+            end
         else
             Ex[ix,iy,iz] = eps_inv * Dx[ix,iy,iz]
         end
@@ -409,25 +493,37 @@ function _cuda_pml_DE_scalar_kernel!(
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            u_old = UDy[ix,iy,iz]
-            UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
-            in_t = UDy[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDy[ix,iy,iz]
+                UDy[ix,iy,iz] = ((_one - σ_val) * u_old + Ky) / (_one + σ_val)
+                in_t = UDy[ix,iy,iz] - u_old
+            else
+                in_t = Ky
+            end
         else
             in_t = Ky
         end
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dy[ix,iy,iz] = ((_one - σ_val) * Dy[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
+            end
         else
             Dy[ix,iy,iz] = Dy[ix,iy,iz] + in_t
         end
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            w_old = WDy[ix,iy,iz]
-            WDy[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
-            Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDy[ix,iy,iz]
+                WDy[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
+                Ey[ix,iy,iz] = Ey[ix,iy,iz] + (_one + σ_val) * WDy[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ey[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
+            end
         else
             Ey[ix,iy,iz] = eps_inv * Dy[ix,iy,iz]
         end
@@ -437,25 +533,37 @@ function _cuda_pml_DE_scalar_kernel!(
 
         if pml_x != Int32(0)
             σ_val = σ_pml_x[Int32(2)*ix_0 - Int32(1)]
-            u_old = UDz[ix,iy,iz]
-            UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
-            in_t = UDz[ix,iy,iz] - u_old
+            if σ_val != zero(σ_val)
+                u_old = UDz[ix,iy,iz]
+                UDz[ix,iy,iz] = ((_one - σ_val) * u_old + Kz) / (_one + σ_val)
+                in_t = UDz[ix,iy,iz] - u_old
+            else
+                in_t = Kz
+            end
         else
             in_t = Kz
         end
 
         if pml_y != Int32(0)
             σ_val = σ_pml_y[Int32(2)*iy_0 - Int32(1)]
-            Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+            if σ_val != zero(σ_val)
+                Dz[ix,iy,iz] = ((_one - σ_val) * Dz[ix,iy,iz] + in_t) / (_one + σ_val)
+            else
+                Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
+            end
         else
             Dz[ix,iy,iz] = Dz[ix,iy,iz] + in_t
         end
 
         if pml_z != Int32(0)
             σ_val = σ_pml_z[Int32(2)*iz_0 - Int32(1)]
-            w_old = WDz[ix,iy,iz]
-            WDz[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
-            Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+            if σ_val != zero(σ_val)
+                w_old = WDz[ix,iy,iz]
+                WDz[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
+                Ez[ix,iy,iz] = Ez[ix,iy,iz] + (_one + σ_val) * WDz[ix,iy,iz] - (_one - σ_val) * w_old
+            else
+                Ez[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
+            end
         else
             Ez[ix,iy,iz] = eps_inv * Dz[ix,iy,iz]
         end
@@ -514,9 +622,13 @@ function _cuda_pml_BH_x_kernel!(
             # SLOW PATH: full PML cascade
             # U stage: X uses σ_next = σ_y
             if σy != _zero
-                u_old = UBx[ix,iy,iz]
-                UBx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
-                in_t = UBx[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UBx[ix,iy,iz]
+                    UBx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
+                    in_t = UBx[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end
@@ -571,9 +683,13 @@ function _cuda_pml_BH_y_kernel!(
         else
             # U stage: Y uses σ_next = σ_z
             if σz != _zero
-                u_old = UBy[ix,iy,iz]
-                UBy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
-                in_t = UBy[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UBy[ix,iy,iz]
+                    UBy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
+                    in_t = UBy[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end
@@ -628,9 +744,13 @@ function _cuda_pml_BH_z_kernel!(
         else
             # U stage: Z uses σ_next = σ_x
             if σx != _zero
-                u_old = UBz[ix,iy,iz]
-                UBz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
-                in_t = UBz[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UBz[ix,iy,iz]
+                    UBz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
+                    in_t = UBz[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end
@@ -686,9 +806,13 @@ function _cuda_pml_DE_x_kernel!(
             Ex[ix,iy,iz] += _get_m(eps_x, ix_0, iy_0, iz_0) * K
         else
             if σy != _zero
-                u_old = UDx[ix,iy,iz]
-                UDx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
-                in_t = UDx[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UDx[ix,iy,iz]
+                    UDx[ix,iy,iz] = ((_one - σy) * u_old + K) / (_one + σy)
+                    in_t = UDx[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end
@@ -738,9 +862,13 @@ function _cuda_pml_DE_y_kernel!(
             Ey[ix,iy,iz] += _get_m(eps_y, ix_0, iy_0, iz_0) * K
         else
             if σz != _zero
-                u_old = UDy[ix,iy,iz]
-                UDy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
-                in_t = UDy[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UDy[ix,iy,iz]
+                    UDy[ix,iy,iz] = ((_one - σz) * u_old + K) / (_one + σz)
+                    in_t = UDy[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end
@@ -790,9 +918,13 @@ function _cuda_pml_DE_z_kernel!(
             Ez[ix,iy,iz] += _get_m(eps_z, ix_0, iy_0, iz_0) * K
         else
             if σx != _zero
-                u_old = UDz[ix,iy,iz]
-                UDz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
-                in_t = UDz[ix,iy,iz] - u_old
+                if σ_val != zero(σ_val)
+                    u_old = UDz[ix,iy,iz]
+                    UDz[ix,iy,iz] = ((_one - σx) * u_old + K) / (_one + σx)
+                    in_t = UDz[ix,iy,iz] - u_old
+                else
+                    in_t = K
+                end
             else
                 in_t = K
             end

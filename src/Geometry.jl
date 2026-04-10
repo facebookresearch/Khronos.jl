@@ -637,6 +637,11 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
 
     # Construct geometry data structure. Importantly, this will transfer all
     # data from the host to the device.
+    #
+    # μ_inv: if per-voxel μ arrays were allocated (i.e. some material has μ≠1),
+    # transfer them to the device just like ε_inv. Otherwise fall back to the
+    # scalar μ_inv = 1 for the branch-free fast path.
+    has_mu = !isnothing(μ_inv_x) || !isnothing(μ_inv_y) || !isnothing(μ_inv_z)
     sim.geometry_data = GeometryData{backend_number,backend_array}(
         ε_inv_x = isnothing(ε_inv_x) ? ε_inv_x : backend_array(ε_inv_x),
         ε_inv_y = isnothing(ε_inv_y) ? ε_inv_y : backend_array(ε_inv_y),
@@ -644,7 +649,10 @@ function init_geometry(sim::SimulationData, geometry::Vector{Object})
         σDx = isnothing(σDx) ? σDx : backend_array(σDx),
         σDy = isnothing(σDy) ? σDy : backend_array(σDy),
         σDz = isnothing(σDz) ? σDz : backend_array(σDz),
-        μ_inv = one(backend_number), # todo add μ support
+        μ_inv = has_mu ? nothing : one(backend_number),
+        μ_inv_x = isnothing(μ_inv_x) ? μ_inv_x : backend_array(μ_inv_x),
+        μ_inv_y = isnothing(μ_inv_y) ? μ_inv_y : backend_array(μ_inv_y),
+        μ_inv_z = isnothing(μ_inv_z) ? μ_inv_z : backend_array(μ_inv_z),
         # right now it's either zeros or nothing...
         σBx = isnothing(σBx) ? σBx : backend_array(σBx),
         σBy = isnothing(σBy) ? σBy : backend_array(σBy),

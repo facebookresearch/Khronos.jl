@@ -364,10 +364,9 @@ function _compute_jacobian(func::Function, args::Vector, arg_idx::Int)
         jac_re = ForwardDiff.jacobian(f_real, vec(real.(x)))
         jac_im = ForwardDiff.jacobian(f_imag, vec(imag.(x)))
 
-        # dJ/dx - i*dJ/dy = 2*∂g/∂z (conjugate Wirtinger derivative).
-        # No additional negation — the E-component sign and adj_src_phase
-        # handle the sign convention for Khronos's source injection.
-        result = vec(jac_re .- im .* jac_im)
+        # Conjugate Wirtinger derivative: ∂f/∂z* = (∂f/∂x + i∂f/∂y) / 2
+        # This matches Meep's autograd convention for adjoint source computation.
+        result = vec(jac_re .+ im .* jac_im) ./ 2
         return result
     else
         return [1.0 + 0.0im]

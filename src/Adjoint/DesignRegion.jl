@@ -287,8 +287,8 @@ end
     install_design_region_monitors!(sim, dr, frequencies)
 
 Install DFT monitors for the forward and adjoint fields at the design region.
-Three monitors are created (one for each E-field component: Ex, Ey, Ez)
-using the existing DFT infrastructure.
+Three monitors are created (one for each D-field component: Dx, Dy, Dz)
+matching Meep's convention for adjoint gradient computation.
 """
 function install_design_region_monitors!(
     sim::SimulationData,
@@ -297,7 +297,7 @@ function install_design_region_monitors!(
 )
     dr.design_monitors = DFTMonitor[]
 
-    for comp in [Ex(), Ey(), Ez()]
+    for comp in [Dx(), Dy(), Dz()]
         mon = DFTMonitor(
             component = comp,
             center = dr.volume.center,

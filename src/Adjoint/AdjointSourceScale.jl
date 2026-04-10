@@ -82,10 +82,8 @@ function adj_src_scale(
         dV = 1.0
     end
 
-    # Corrected iomega: discrete time derivative factor
-    iomega = (1.0 .- exp.(-im .* (2π .* frequencies) .* dt)) ./ dt
-
-    # DTFT of the forward source dipole waveform.
+    # DTFT of the forward source (now a raw dipole, no 1/(-iω)).
+    # Uses dt/√(2π) normalization.
     n_steps = floor(Int, T_sim / dt)
     t_vals = collect(0:n_steps-1) .* dt
     y = [Complex{Float64}(eval_time_source(time_profile, t)) for t in t_vals]
@@ -97,26 +95,31 @@ function adj_src_scale(
         )
     end
 
-    # Phase correction from center frequency
-    fcen = get_frequency(time_profile)
-    src_center_dtft = sum(
-        dt / sqrt(2π) .* exp.(im .* 2π .* fcen .* t_vals) .* y
-    )
-    cutoff = 5.0
-    fwidth_scale = exp(-2im * π * cutoff / fwidth_frac)
-    adj_src_phase = exp(im * angle(src_center_dtft)) * fwidth_scale
+    # Scale derivation (exact, no approximations):
+    #
+    # With eval_time_source returning the raw dipole (cos-like source):
+    #   DFT(Re[S]) = 0.5 · DFT(S)  [verified exact for real spatial amplitudes]
+    #   D_adj ∝ 0.5·√(2π)·fwd_dtft · dJ·scale
+    #   D_fwd ∝ 0.5·√(2π)·fwd_dtft · A_fwd
+    #   Overlap ∝ 0.5π · scale · fwd_dtft² · dJ · A_fwd
+    #
+    # scale = C/fwd_dtft² guarantees scale·fwd_dtft² = C (real).
+    # Setting 0.5π·C = 1 → C = 2/π.
 
     if length(frequencies) == 1
-        scale = dV .* iomega ./ fwd_dtft ./ adj_src_phase
+        scale = 2.0 .* dV ./ (π * sqrt(2π) .* fwd_dtft)
     else
-        scale = dV .* iomega ./ adj_src_phase
+        # Multi-frequency: placeholder
+        iomega = (1.0 .- exp.(-im .* (2π .* frequencies) .* dt)) ./ dt
+        fcen = get_frequency(time_profile)
+        src_center_dtft = sum(
+            dt / sqrt(2π) .* exp.(im .* 2π .* fcen .* t_vals) .* y
+        )
+        cutoff = 5.0
+        fwidth_scale = exp(-2im * π * cutoff / fwidth_frac)
+        adj_src_phase = exp(im * angle(src_center_dtft)) * fwidth_scale
+        scale = dV .* iomega ./ adj_src_phase .* 2
     end
-
-    # Real-field correction: Khronos uses real-valued FDTD fields (non-Bloch BC).
-    # The source injection does fSD += real(scalar_amp * spatial_amp), which
-    # halves the positive-frequency Fourier amplitude: Re[J] = (J + J*)/2.
-    # To compensate, we multiply by 2, matching meep's using_real_fields() path.
-    scale .*= 2
 
     return scale
 end

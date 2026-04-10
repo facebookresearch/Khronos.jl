@@ -345,7 +345,7 @@ function get_plane_transverse_fields(vol::Volume)
 
     transverse_field_mapping = Dict(
         1 => [Ey(), Ez(), Hy(), Hz()],
-        2 => [Ex(), Ez(), Ex(), Hz()],
+        2 => [Ex(), Ez(), Hx(), Hz()],
         3 => [Ex(), Ey(), Hx(), Hy()],
     )
 

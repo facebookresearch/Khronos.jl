@@ -90,6 +90,9 @@ get_fields_from_component(sim::SimulationData, ::Ez) = sim.fields.fEz
 get_fields_from_component(sim::SimulationData, ::Hx) = sim.fields.fHx
 get_fields_from_component(sim::SimulationData, ::Hy) = sim.fields.fHy
 get_fields_from_component(sim::SimulationData, ::Hz) = sim.fields.fHz
+get_fields_from_component(sim::SimulationData, ::Dx) = sim.fields.fDx
+get_fields_from_component(sim::SimulationData, ::Dy) = sim.fields.fDy
+get_fields_from_component(sim::SimulationData, ::Dz) = sim.fields.fDz
 # FIXME: once we have offdiag compoents, the inverse is more complicated...
 get_fields_from_component(sim::SimulationData, ::εx) = inv.(sim.geometry_data.ε_inv_x)
 get_fields_from_component(sim::SimulationData, ::εy) = inv.(sim.geometry_data.ε_inv_y)
