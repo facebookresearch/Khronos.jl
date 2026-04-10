@@ -1,0 +1,58 @@
+name = "Khronos"
+uuid = "1a8c1b36-e3c2-448e-9848-c1c7b39e0d79"
+version = "0.2.0"
+authors = ["Alec Hammond <alechammond@meta.com>"]
+
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
+ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+Einsum = "b7d42ee7-0b51-5a75-98ca-779d3107e4c0"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+GeometryPrimitives = "17051e67-205e-509e-8301-03b320b998e6"
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+NCCL = "3fe64909-d7a1-4096-9b7d-7a0f12cf0f6b"
+OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
+PackageCompiler = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
+Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+VectorModesolver = "8c544392-5fd9-4640-bea4-e12b3d59d9d1"
+YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[compat]
+ChainRules = "1.73.0"
+ChainRulesCore = "1.26.0"
+FFTW = "1.10.0"
+ForwardDiff = "1.3.2"
+GeometryPrimitives = "0.5.0"
+MPI = "0.20.23"
+Makie = ">= 0.20"
+NCCL = "0.1.2"
+OrderedCollections = "1.8.1"
+PackageCompiler = "2.2.5"
+PythonCall = "0.9.31"
+SpecialFunctions = "2.7.1"
+VectorModesolver = "0.1.1, 0.2"
+Zygote = "0.7.10"
+julia = "1.8"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
