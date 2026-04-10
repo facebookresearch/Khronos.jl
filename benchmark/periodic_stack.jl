@@ -7,8 +7,14 @@ using KernelAbstractions
 using Logging
 using Test
 using GeometryPrimitives
-include("benchmark_utils.jl")
+if !@isdefined(BenchmarkUtils)
+    include("benchmark_utils.jl")
+end
 using .BenchmarkUtils
+if !@isdefined(BenchmarkMetrics)
+    include("benchmark_metrics.jl")
+end
+using .BenchmarkMetrics
 
 debuglogger = ConsoleLogger(stderr, Logging.Warn)
 global_logger(debuglogger)
@@ -19,7 +25,8 @@ YAML_FILENAME = joinpath(@__DIR__, "periodic_stack.yml")
 profiling_results = YAML.load_file(YAML_FILENAME)
 
 # set the appropriate backend and determine if this is a profile run
-backend, precision, profile_run = detect_and_set_backend()
+backend, precision, profile_run, metrics_run = detect_and_set_backend()
+precision_type = precision == "Float32" ? Float32 : Float64
 
 # current hardware
 hardware_key = get_hardware_key()
@@ -101,10 +108,24 @@ end
                 profile_run,
                 benchmark,
             )
+
+            if metrics_run
+                collect_and_store_metrics(sim, precision_type, benchmark;
+                    label="periodic_stack (res=$resolution, z=$z_scaling)")
+            end
         end
+    end
+
+    # Store kernel metrics once (not per-config — registers don't change with grid size)
+    if metrics_run
+        km = collect_kernel_metrics(precision_type)
+        if !haskey(profiling_results[TESTNAME], "kernel_metrics")
+            profiling_results[TESTNAME]["kernel_metrics"] = Dict{String,Any}()
+        end
+        profiling_results[TESTNAME]["kernel_metrics"][precision] = kernel_metrics_to_dict(km)
     end
 end
 
-if profile_run
+if profile_run || metrics_run
     YAML.write_file(YAML_FILENAME, profiling_results)
 end

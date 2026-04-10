@@ -90,6 +90,9 @@ get_fields_from_component(sim::SimulationData, ::Ez) = sim.fields.fEz
 get_fields_from_component(sim::SimulationData, ::Hx) = sim.fields.fHx
 get_fields_from_component(sim::SimulationData, ::Hy) = sim.fields.fHy
 get_fields_from_component(sim::SimulationData, ::Hz) = sim.fields.fHz
+get_fields_from_component(sim::SimulationData, ::Dx) = sim.fields.fDx
+get_fields_from_component(sim::SimulationData, ::Dy) = sim.fields.fDy
+get_fields_from_component(sim::SimulationData, ::Dz) = sim.fields.fDz
 # FIXME: once we have offdiag compoents, the inverse is more complicated...
 get_fields_from_component(sim::SimulationData, ::εx) = inv.(sim.geometry_data.ε_inv_x)
 get_fields_from_component(sim::SimulationData, ::εy) = inv.(sim.geometry_data.ε_inv_y)
@@ -129,13 +132,30 @@ function initialize_field_component_array(
     sim::SimulationData,
     component::Field,
 )::AbstractArray
+    # P.5: Allocate raw GPU array without OffsetArray wrapping.
+    # Ghost cells are at raw indices 1 and N+2; interior at 2:(N+1).
+    # Kernels use shifted indices (ix+1, iy+1, iz+1) to access interior cells.
     array_dims = get_component_voxel_count(sim, component) .+ 2
-    return OffsetArray(
-        KernelAbstractions.zeros(backend_engine, backend_number, array_dims...),
-        -1,
-        -1,
-        -1,
-    )
+    # Use complex arrays when Bloch BC is active
+    num_type = _needs_complex_fields(sim) ? complex_backend_number : backend_number
+    return KernelAbstractions.zeros(backend_engine, num_type, array_dims...)
+end
+
+"""
+    _needs_complex_fields(sim) -> Bool
+
+Check if the simulation requires complex-valued field arrays (e.g. for Bloch BC).
+"""
+function _needs_complex_fields(sim::SimulationData)
+    isnothing(sim.boundary_conditions) && return false
+    for axis_bcs in sim.boundary_conditions
+        for bc in axis_bcs
+            if bc isa Bloch
+                return true
+            end
+        end
+    end
+    return false
 end
 
 """
@@ -215,11 +235,13 @@ function allocate_fields_TM(sim::SimulationData)
 end
 
 """
-    init_fields(sim::SimulationData, ::Union{Type{TwoD},Type{ThreeD}})
+    init_fields(sim::SimulationData, dim)
 
-Allocate all the necessary field components for a full 3D simulation.
+Allocate all the necessary field components for the simulation dimensionality.
+For 2D simulations we still allocate all 6 field components — the GPU kernels
+require uniform array types.  Unused components remain zero.
 """
-function init_fields(sim::SimulationData, ::Union{Type{ThreeD}})
+function init_fields(sim::SimulationData, ::Union{Type{ThreeD},Type{TwoD},Type{TwoD_TE},Type{TwoD_TM}})
     sim.fields =
         Fields{AbstractArray}(; allocate_fields_TE(sim)..., allocate_fields_TM(sim)...)
 end

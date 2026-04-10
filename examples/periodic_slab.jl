@@ -105,39 +105,50 @@ function compute_power(sim::Khronos.SimulationData)
     return sum(abs.(sim.monitors[1].monitor_data.fields) .^ 2, dims = [1, 2])[1, 1, 1, :]
 end
 
-function main()
-    # Arbitrary simulation parameters that produce at least two maxima
-    d = 0.5
-    n = 3.5
-    λ = range(1.0, 2.0, length = 100)
-    resolution = 50
+# Arbitrary simulation parameters that produce at least two maxima
+d = 0.5
+n = 3.5
+λ = range(1.0, 2.0, length = 100)
+resolution = 50
 
-    sim = build_simulation(d, n, λ, resolution; plot_geometry = false)
-
+function run_periodic_slab(d, n, λ, resolution)
     # Run a normalization simulation
-    run_simulation!(sim)
-
-    # Compute the total power to normalize the actual simulation
-    baseline = compute_power(sim)
+    sim_norm = build_simulation(d, n, λ, resolution; plot_geometry = false)
+    run_simulation!(sim_norm)
+    baseline = compute_power(sim_norm)
 
     # Run the actual simulation
-    sim = build_simulation(d, n, λ, resolution; plot_geometry = true)
-    run_simulation!(sim)
-    slab = compute_power(sim)
+    sim_slab = build_simulation(d, n, λ, resolution; plot_geometry = true)
+    run_simulation!(sim_slab)
+    slab = compute_power(sim_slab)
 
-    # Normalize the transmission response
     T_Khronos = slab ./ baseline
-
-    # Compute the analytic response for comparison
-    T = slab_analytical(d, n, λ)
-
-    # Plot the comparison
-    f = Figure()
-    ax = Axis(f[1, 1], xlabel = "λ (μm)", ylabel = "T (a.u.)")
-    line1 = scatterlines!(ax, λ, Array(T))
-    line2 = scatterlines!(ax, λ, Array(T_Khronos))
-    legend = Legend(f[1, 2], [line1, line2], ["Analytic", "Khronos"])
-    save("periodic_slab.png", f)
+    return T_Khronos
 end
 
-main()
+# --- Run 1: includes JIT compilation ---
+println("=" ^ 60)
+println("RUN 1 (cold — includes JIT compilation)")
+println("=" ^ 60)
+t1 = time()
+T_Khronos = run_periodic_slab(d, n, λ, resolution)
+println("Run 1 total wall time: $(round(time() - t1, digits=3))s\n")
+
+# --- Run 2: fresh sim, JIT already done ---
+println("=" ^ 60)
+println("RUN 2 (warm — JIT already compiled)")
+println("=" ^ 60)
+t2 = time()
+T_Khronos = run_periodic_slab(d, n, λ, resolution)
+println("Run 2 total wall time: $(round(time() - t2, digits=3))s\n")
+
+# Compute the analytic response for comparison
+T = slab_analytical(d, n, λ)
+
+# Plot the comparison
+f = Figure()
+ax = Axis(f[1, 1], xlabel = "λ (μm)", ylabel = "T (a.u.)")
+line1 = scatterlines!(ax, λ, Array(T))
+line2 = scatterlines!(ax, λ, Array(T_Khronos))
+legend = Legend(f[1, 2], [line1, line2], ["Analytic", "Khronos"])
+save("periodic_slab.png", f)

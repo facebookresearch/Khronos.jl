@@ -1,0 +1,243 @@
+bloch_photonic_crystal:
+  kernel_metrics:
+    Float32:
+      "BH interior":
+        occupancy_pct: 100.0
+        registers: 32
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML DE per-voxel":
+        occupancy_pct: 100.0
+        registers: 24
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML DE scalar":
+        occupancy_pct: 87.5
+        registers: 36
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "DE scalar eps":
+        occupancy_pct: 100.0
+        registers: 28
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "DE per-voxel eps":
+        occupancy_pct: 100.0
+        registers: 32
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML BH":
+        occupancy_pct: 87.5
+        registers: 36
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+    Float64:
+      "BH interior":
+        occupancy_pct: 100.0
+        registers: 32
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML DE per-voxel":
+        occupancy_pct: 62.5
+        registers: 46
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML DE scalar":
+        occupancy_pct: 62.5
+        registers: 48
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "DE scalar eps":
+        occupancy_pct: 100.0
+        registers: 32
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "DE per-voxel eps":
+        occupancy_pct: 100.0
+        registers: 30
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+      "PML BH":
+        occupancy_pct: 62.5
+        registers: 50
+        local_mem_bytes: 0
+        shared_mem_bytes: 0
+        max_threads: 1024
+  "NVIDIA A100-SXM4-80GB":
+    CUDA:
+      Float64:
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 1
+          tolerance: 1.1
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 3
+          tolerance: 1.1
+        - timestep_rate: 0
+          resolution: 30
+          n_cells: 3
+          tolerance: 1.1
+  "NVIDIA H100":
+    CUDA:
+      Float64:
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 1
+          tolerance: 1.1
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 3
+          tolerance: 1.1
+        - timestep_rate: 0
+          resolution: 30
+          n_cells: 3
+          tolerance: 1.1
+    CPU:
+      Float64:
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 1
+          tolerance: 1.1
+  "Apple M1 Pro":
+    CPU:
+      Float64:
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 1
+          tolerance: 1.1
+    Metal:
+      Float32:
+        - timestep_rate: 0
+          resolution: 20
+          n_cells: 1
+          tolerance: 1.1
+  "NVIDIA GH200 480GB":
+    CUDA:
+      Float32:
+        - bandwidth_E_update_GBps: 22.1
+          phase_total_ms: 0.181
+          phase_sources_ms: 0.02
+          gpu_memory_used_GB: 4.2
+          timestep_rate: 35.78740715108479
+          phase_step_E_ms: 0.078
+          phase_step_H_ms: 0.078
+          grid_total_voxels: 36000
+          phase_monitors_ms: 0.005
+          resolution: 20
+          bandwidth_H_pct_peak: 0.4
+          n_cells: 1
+          grid_Nx: 20
+          grid_Ny: 20
+          bandwidth_H_update_GBps: 16.5
+          grid_Nz: 90
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 0.5
+          tolerance: 1.1
+        - bandwidth_E_update_GBps: 135.0
+          phase_total_ms: 0.283
+          phase_sources_ms: 0.021
+          gpu_memory_used_GB: 4.3
+          timestep_rate: 322.02560556585036
+          phase_step_E_ms: 0.115
+          phase_step_H_ms: 0.141
+          grid_total_voxels: 324000
+          phase_monitors_ms: 0.006
+          resolution: 20
+          bandwidth_H_pct_peak: 2.1
+          n_cells: 3
+          grid_Nx: 60
+          grid_Ny: 60
+          bandwidth_H_update_GBps: 82.5
+          grid_Nz: 90
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 3.4
+          tolerance: 1.1
+        - bandwidth_E_update_GBps: 201.5
+          phase_total_ms: 0.656
+          phase_sources_ms: 0.023
+          gpu_memory_used_GB: 4.6
+          timestep_rate: 1092.1678288906562
+          phase_step_E_ms: 0.261
+          phase_step_H_ms: 0.366
+          grid_total_voxels: 1093500
+          phase_monitors_ms: 0.007
+          resolution: 30
+          bandwidth_H_pct_peak: 2.7
+          n_cells: 3
+          grid_Nx: 90
+          grid_Ny: 90
+          bandwidth_H_update_GBps: 107.7
+          grid_Nz: 135
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 5.0
+          tolerance: 1.1
+      Float64:
+        - bandwidth_E_update_GBps: 45.3
+          phase_total_ms: 0.173
+          phase_sources_ms: 0.019
+          timestep_rate: 35.81270136424872
+          gpu_memory_used_GB: 6.6
+          phase_step_E_ms: 0.076
+          phase_step_H_ms: 0.073
+          grid_total_voxels: 36000
+          phase_monitors_ms: 0.005
+          resolution: 20
+          bandwidth_H_pct_peak: 0.9
+          n_cells: 1
+          grid_Nx: 20
+          grid_Ny: 20
+          bandwidth_H_update_GBps: 35.4
+          grid_Nz: 90
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 1.1
+          tolerance: 1.1
+        - bandwidth_E_update_GBps: 215.8
+          phase_total_ms: 0.334
+          phase_sources_ms: 0.02
+          timestep_rate: 190.55901932436922
+          gpu_memory_used_GB: 6.7
+          phase_step_E_ms: 0.144
+          phase_step_H_ms: 0.164
+          grid_total_voxels: 324000
+          phase_monitors_ms: 0.006
+          resolution: 20
+          bandwidth_H_pct_peak: 3.5
+          n_cells: 3
+          grid_Nx: 60
+          grid_Ny: 60
+          bandwidth_H_update_GBps: 142.1
+          grid_Nz: 90
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 5.4
+          tolerance: 1.1
+        - bandwidth_E_update_GBps: 292.5
+          phase_total_ms: 0.858
+          phase_sources_ms: 0.023
+          timestep_rate: 1080.5121242390546
+          gpu_memory_used_GB: 7.2
+          phase_step_E_ms: 0.359
+          phase_step_H_ms: 0.468
+          grid_total_voxels: 1093500
+          phase_monitors_ms: 0.008
+          resolution: 30
+          bandwidth_H_pct_peak: 4.2
+          n_cells: 3
+          grid_Nx: 90
+          grid_Ny: 90
+          bandwidth_H_update_GBps: 168.3
+          grid_Nz: 135
+          bandwidth_peak_GBps: 4022.8
+          bandwidth_E_pct_peak: 7.3
+          tolerance: 1.1

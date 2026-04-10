@@ -1,42 +1,67 @@
 # Benchmarks
 
-Here we describe the following performance benchmarks used to detect performance regressions:
+Here we describe the performance benchmarks used to detect performance regressions. Each benchmark measures the **timestepping rate** (voxels/second) and compares it against per-hardware baselines stored in YAML files.
 
-* `dipole.jl` - A simple dipole in vacumm, run at multiple resolutions. (Future work could include symmetries and different kinds of boundary conditions, near2far transforms, dft monitors.)
-* `periodic_stack.jl` - A 1D periodic stack (simulated in 3D), run at multiple resolutions. Consists of a planewave source, PML, and dielectric materials throughout the domain. (Future work could include periodic boundaries, dispersive materials, anisotropic materials, subpixel smoothing, DFT monitors, time monitors.)
-* `metallic_sphere.jl` - A metallic sphere in vaccum, run at multiple resolutions. (Future work could DFT and time monitors, subpixel smoothing, and dispersive materials.)
+## Basic FDTD benchmarks
 
-All benchmarks detect the current hardware and flags the user if the performance of the bechmark is significantly different than what's expected. Each benchmark simulates the **timestepping rate** (voxels/second). Future work should also check for additional/different allocations.
+These test core FDTD kernel performance with minimal physics:
 
-The file, `benchmark_utils.jl` contains various refactored routines that are repeated throughout the benchmarks.
+* `dipole.jl` — A point dipole in vacuum with PML. Sweeps resolution and domain size.
+* `periodic_stack.jl` — A 1D periodic dielectric stack (simulated in 3D) with planewave source and PML.
+* `sphere.jl` — Planewave scattering off a dielectric sphere. Tests geometry rasterization (Ball primitive).
 
-Future benchmarks include
-* `grating_coupler.jl` - A simple silicon photonics grating coupler simulation (pulled from SiEPIC).
-* `directional_coupler.jl` - A simple silicon photonics directional coupler simulation (pulled from SiEPIC).
-* `metalens.jl` - A simple metalens simulation (pulled from the Tidy3D paper).
-* `uLED.jl` - A simple uLED pixel.
+## Silicon photonics benchmarks
+
+These represent realistic silicon photonics workloads on the standard SOI platform (220 nm Si, SiO2 cladding, C-band 1.55 μm):
+
+* `waveguide_mode.jl` — Straight Si waveguide with ModeSource excitation. Tests eigenmode solve + injection, subpixel smoothing at waveguide boundaries.
+* `directional_coupler.jl` — Two parallel Si waveguides with a narrow coupling gap. Tests fine geometry features, evanescent coupling region, ModeSource.
+* `mmi_coupler.jl` — 2×2 multimode interferometer (MMI) coupler. Tests multiple Cuboid geometry objects, ModeSource, TE z-symmetry.
+* `ring_coupler.jl` — Waveguide-to-ring resonator coupler. Tests Cylinder geometry, absorber boundaries, overlapping geometry with priority ordering, ModeSource.
+
+## Advanced physics benchmarks
+
+These test specialized FDTD features beyond basic dielectric simulations:
+
+* `periodic_bloch.jl` — Photonic crystal slab with Bloch-periodic boundary conditions. Tests complex-valued fields, phase-shifted halos (a fundamentally different kernel path from PML).
+* `uled.jl` — Blue micro-LED with dispersive silver (Drude model). Tests ADE (auxiliary differential equation) update kernels, TruncatedCone geometry, Cylinder geometry, multi-layer material stacks.
+* `metalens.jl` — Pancharatnam-Berry phase metalens with thousands of rotated TiO2 pillars. Stress-tests geometry rasterization and raw GPU throughput at large voxel counts.
+
+## File structure
+
+Each benchmark consists of:
+- A `.jl` file containing the simulation setup and benchmark loop
+- A `.yml` file containing per-hardware baseline timestep rates and tolerances
+
+The utility module `benchmark_utils.jl` provides shared infrastructure: backend detection, hardware key generation, and baseline comparison logic.
 
 ## Usage
 
-To run the suite of benchmarks on your platform, simply run:
+To run the full suite of benchmarks on your platform:
 
 ```bash
 julia run_benchmarks.jl
 ```
 
-To (optionally) specify a particular hardware platform (either `CUDA`, `METAL` or `CPU`), use the `--backend` flag:
+To specify a particular hardware backend (`CUDA`, `Metal`, or `CPU`):
 
 ```bash
 julia run_benchmarks.jl --backend=CUDA
 ```
 
-To (optionally) specify the arithemtic precision (either `Float32` or `Float64`), use the `--precision` flag:
+To specify the arithmetic precision (`Float32` or `Float64`):
 
 ```bash
 julia run_benchmarks.jl --backend=CUDA --precision=Float64
 ```
 
-To (optionally) _profile_ the current hardware and save the results, us the `--profile` flag:
+To run only specific benchmarks (comma-separated names):
+
+```bash
+julia run_benchmarks.jl --select=dipole,metalens,ring_coupler
+```
+
+To profile the current hardware and save results to the YAML baseline files:
 
 ```bash
 julia run_benchmarks.jl --backend=CUDA --precision=Float64 --profile
@@ -44,10 +69,21 @@ julia run_benchmarks.jl --backend=CUDA --precision=Float64 --profile
 
 ## Saving profiling results
 
-All profiling results can be saved to the benchmark's corresponding yaml file. For example, all `dipole.jl` results will be saved in `dipole.yml`.
+All profiling results are saved to each benchmark's corresponding YAML file (e.g., `dipole.yml`, `metalens.yml`). When adding a new hardware platform or precision configuration, you must manually add the appropriate test entries to the YAML file. This allows you to tailor simulation parameters (domain size, resolution) to each hardware platform's capabilities.
 
-Whenever adding a new hardware platform or precision configuration, you must manually add in the appropriate tests to the yaml file. This allows you to cherrypick specific simulation parameters best geared for that particular hardware platform.
+Each benchmark entry accepts a `tolerance` parameter controlling the sensitivity threshold. For example, a tolerance of `1.1` means a 10% performance drop will raise a warning.
 
-For example, since an NVIDIA H100 GPU has significantly more VRAM than an NVIDIA V100, you'll want to setup tests with larger domains, resolutions, etc.
+## Feature coverage matrix
 
-Similarly, all profile configurations accept a "tolerance" parameter, which can be used to specify how sensitive a change in performance needs to be before alerting a user. For example, a tolerance of 1.1 indicates a change of 10% will raise a warning, encouraging the user to record the change.
+| Benchmark | PML | Bloch | Geometry | ModeSource | Dispersive | Symmetry |
+|-----------|-----|-------|----------|------------|------------|----------|
+| dipole | ✓ | | point only | | | |
+| periodic_stack | ✓ | | Cuboid | | | |
+| sphere | ✓ | | Ball | | | |
+| waveguide_mode | ✓ | | Cuboid (SOI) | ✓ | | |
+| directional_coupler | ✓ | | Cuboid (SOI) | ✓ | | |
+| mmi_coupler | ✓ | | Cuboid (SOI) | ✓ | | ✓ |
+| ring_coupler | ✓ | | Cylinder + Cuboid | ✓ | | |
+| periodic_bloch | ✓ | ✓ | Cylinder + Cuboid | | | |
+| uled | ✓ | | TruncatedCone + Cylinder + Cuboid | | ✓ (Drude) | |
+| metalens | ✓ | | rotated Cuboid (×N²) | | | |

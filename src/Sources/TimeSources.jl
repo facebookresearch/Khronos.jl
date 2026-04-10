@@ -59,7 +59,8 @@ function ContinuousWaveSource(; fcen::Number)::ContinuousWaveData
 end
 
 function eval_time_source(src::ContinuousWaveData{N}, t::Real) where {N<:Number}
-    return exp(-im * 2 * π * src.fcen * t)
+    T = real(N)
+    return exp(-Complex{T}(im) * T(2) * T(π) * src.fcen * T(t))
 end
 
 function get_cutoff(src::ContinuousWaveData)
@@ -97,7 +98,12 @@ function GaussianPulseSource(; fcen, fwidth, start_time = 0.0, cutoff_scale = 5.
         cutoff *= 0.9
     end
 
-    peak_time = (cutoff) / 2
+    # Snap peak_time to the nearest integer multiple of 1/fcen.
+    # This ensures exp(iω·peak_time) = 1, making the source DTFT purely real
+    # and eliminating phase-dependent sign flips in the adjoint gradient.
+    peak_time_raw = cutoff / 2
+    period = 1.0 / fcen
+    peak_time = round(peak_time_raw / period) * period
 
     return GaussianPulseData{backend_number}(fcen, fwidth, width, peak_time, cutoff)
 end
@@ -115,14 +121,14 @@ function _gaussian_bandwidth(width)
 end
 
 function eval_time_source(src::GaussianPulseData{numType}, t::Real) where {numType<:Number}
-    tt = t - src.peak_time
+    T = real(numType)
+    tt = T(t) - src.peak_time
     if tt > src.cutoff
-        return 0.0
+        return zero(Complex{T})
     end
-    amp = inv((-2 * pi * src.fcen * im))
-    return exp(-tt * tt / (2 * src.width * src.width)) *
-           exp(-2 * pi * im * src.fcen * tt) *
-           amp
+    two_pi = T(2) * T(π)
+    return exp(-tt * tt / (T(2) * src.width * src.width)) *
+           exp(-two_pi * Complex{T}(im) * src.fcen * tt)
 end
 
 get_cutoff(src::GaussianPulseData) = src.cutoff
@@ -135,4 +141,52 @@ end
 # Custom source
 # ---------------------------------------------------------- #
 
-# TODO
+"""
+    CustomSourceData{F,N} <: TimeSource
+
+A time source driven by an arbitrary user-supplied function `src_func(t)`.
+Used by the adjoint solver for FilteredSource basis functions and arbitrary
+waveform injection.
+
+Fields:
+- `src_func::F`: callable `src_func(t::Real) -> Complex{Real}`.
+- `fcen::N`: center frequency (for auto-decimation and bandwidth estimation).
+- `fwidth::N`: frequency width (bandwidth of the source content).
+- `end_time::N`: time after which the source is zero.
+"""
+@with_kw struct CustomSourceData{F,N<:Number} <: TimeSource
+    src_func::F
+    fcen::N
+    fwidth::N
+    end_time::N
+end
+
+"""
+    CustomSource(; src_func, fcen, fwidth, end_time)
+
+Create a custom time source driven by `src_func(t)`.
+"""
+function CustomSource(; src_func, fcen, fwidth, end_time)
+    return CustomSourceData{typeof(src_func),backend_number}(
+        src_func,
+        backend_number(fcen),
+        backend_number(fwidth),
+        backend_number(end_time),
+    )
+end
+
+function eval_time_source(src::CustomSourceData{F,N}, t::Real) where {F,N<:Number}
+    T = real(N)
+    if T(t) > src.end_time
+        return zero(Complex{T})
+    end
+    return Complex{T}(src.src_func(T(t)))
+end
+
+get_cutoff(src::CustomSourceData) = src.end_time
+
+function get_frequency(src::CustomSourceData)
+    return src.fcen
+end
+
+export CustomSource

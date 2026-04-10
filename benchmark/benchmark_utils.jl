@@ -42,12 +42,15 @@ function detect_and_set_backend()
         "--profile"
         help = "Profile the current benchmark (e.g. to update values)"
         action = :store_true
+        "--metrics"
+        help = "Collect GPU metrics (phase timing, bandwidth, registers)"
+        action = :store_true
     end
 
     parsed_args = parse_args(s)
     backend_struct, precion_struct =
         detect_and_set_backend(parsed_args["backend"], parsed_args["precision"])
-    return backend_struct, precion_struct, parsed_args["profile"]
+    return backend_struct, precion_struct, parsed_args["profile"], parsed_args["metrics"]
 end
 
 function detect_and_set_backend(backend::String, precision::String)

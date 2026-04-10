@@ -50,3 +50,13 @@ agent_key*
 # committed for packages, but should be committed for applications that require a static
 # environment.
 Manifest.toml
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+.venv/
+
+# Environment / tooling
+.CondaPkg/
+.claude/
